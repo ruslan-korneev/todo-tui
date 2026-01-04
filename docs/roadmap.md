@@ -94,6 +94,9 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 - [x] DELETE /api/v1/workspaces/{wid}/tasks/{id}/comments/{cid}
 - [x] Comments list in task detail TUI
 - [x] Add comment with timestamp
+- [ ] Create CommentWithUser response type (includes author username)
+- [ ] Update comment list endpoint to return CommentWithUser
+- [ ] Update TUI to display comments as `[timestamp][@username]: content`
 
 ---
 
@@ -121,6 +124,18 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 ---
 
 ## Phase 4: Workspaces & Multi-user
+
+### 4.0 User Enhancements
+- [ ] Add username field to User model (unique, alphanumeric + underscore)
+- [ ] Migration: Add username column to users table
+- [ ] Update registration to require username
+- [ ] Add email verification flow with one-time code
+- [ ] Migration: Add verification fields (is_verified, verification_code, verification_expires_at)
+- [ ] POST /api/v1/auth/verify - Verify email with code
+- [ ] POST /api/v1/auth/resend-verification - Resend verification code
+- [ ] Restrict login to verified users only
+- [ ] Update TUI registration to include username input
+- [ ] Add email verification screen in TUI
 
 ### 4.1 Workspace API
 - [x] GET /api/v1/workspaces - List user's workspaces
@@ -287,7 +302,7 @@ Command Mode:
 
 ```sql
 -- Core entities
-users (id, email, password_hash, display_name, created_at)
+users (id, email, username, password_hash, display_name, is_verified, verification_code, created_at)
 workspaces (id, name, slug, owner_id, settings jsonb)
 workspace_members (workspace_id, user_id, role)
 
@@ -320,6 +335,8 @@ POST   /api/v1/auth/login
 POST   /api/v1/auth/refresh
 POST   /api/v1/auth/logout
 GET    /api/v1/auth/me
+POST   /api/v1/auth/verify
+POST   /api/v1/auth/resend-verification
 ```
 
 ### Workspaces

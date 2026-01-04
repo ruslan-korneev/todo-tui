@@ -1,0 +1,39 @@
+[package]
+name = "todo-tui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Terminal UI client for TODO application"
+
+[dependencies]
+todo-shared = { path = "../todo-shared" }
+
+# Async runtime
+tokio.workspace = true
+
+# TUI
+ratatui.workspace = true
+crossterm.workspace = true
+
+# HTTP client
+reqwest.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Common types
+uuid.workspace = true
+chrono.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Config
+dotenvy.workspace = true

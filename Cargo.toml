@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/todo-shared",
+    "crates/todo-server",
+    "crates/todo-tui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Ruslan Korneev"]
+license = "MIT"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Shared
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Server
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"] }
+tower = { version = "0.4", features = ["util", "timeout"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip"] }
+jsonwebtoken = "9"
+argon2 = "0.5"
+dotenvy = "0.15"
+
+# TUI
+ratatui = "0.28"
+crossterm = "0.28"
+reqwest = { version = "0.12", features = ["json"] }
+
+# Integrations (added later)
+# teloxide = { version = "0.12", features = ["macros"] }

@@ -28,11 +28,11 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 - [x] API request/response types
 
 ### 1.3 Database Schema (`migrations/`)
-- [ ] Users & authentication tables
-- [ ] Workspaces & membership (with roles)
-- [ ] Task statuses (kanban columns)
-- [ ] Tasks table with all fields
-- [ ] Comments table
+- [x] Users & authentication tables
+- [x] Workspaces & membership (with roles)
+- [x] Task statuses (kanban columns)
+- [x] Tasks table with all fields
+- [x] Comments table
 - [ ] Tags table
 - [ ] Documents table (ltree for hierarchy)
 - [ ] Full-text search indexes (pg_trgm)
@@ -40,39 +40,39 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 
 ### 1.4 Basic Backend (`crates/todo-server/`)
 - [x] Axum app skeleton with config
-- [ ] Database connection pool (SQLx)
+- [x] Database connection pool (SQLx)
 - [x] Error handling infrastructure
-- [ ] Auth endpoints (register, login, JWT)
-- [ ] Auth middleware
-- [ ] Refresh token handling
+- [x] Auth endpoints (register, login, JWT)
+- [x] Auth middleware
+- [x] Refresh token handling
 
 ### 1.5 Basic TUI (`crates/todo-tui/`)
 - [x] Terminal setup/teardown
 - [x] Basic app state structure
 - [x] Event handling loop
 - [x] Basic UI rendering
-- [ ] Login view
-- [ ] API client skeleton
+- [x] Login view
+- [x] API client skeleton
 
 ---
 
 ## Phase 2: Core Task Management
 
 ### 2.1 Task API
-- [ ] GET /api/v1/workspaces/{wid}/tasks - List tasks
-- [ ] POST /api/v1/workspaces/{wid}/tasks - Create task
-- [ ] GET /api/v1/workspaces/{wid}/tasks/{id} - Get task
-- [ ] PUT /api/v1/workspaces/{wid}/tasks/{id} - Update task
-- [ ] DELETE /api/v1/workspaces/{wid}/tasks/{id} - Delete task
-- [ ] PUT /api/v1/workspaces/{wid}/tasks/{id}/move - Move task
-- [ ] Status CRUD endpoints
+- [x] GET /api/v1/workspaces/{wid}/tasks - List tasks
+- [x] POST /api/v1/workspaces/{wid}/tasks - Create task
+- [x] GET /api/v1/workspaces/{wid}/tasks/{id} - Get task
+- [x] PUT /api/v1/workspaces/{wid}/tasks/{id} - Update task
+- [x] DELETE /api/v1/workspaces/{wid}/tasks/{id} - Delete task
+- [x] PUT /api/v1/workspaces/{wid}/tasks/{id}/move - Move task
+- [x] Status CRUD endpoints
 
 ### 2.2 Kanban TUI
-- [ ] KanbanBoard component with columns
-- [ ] Column component
-- [ ] TaskCard component
-- [ ] Vim navigation (h/j/k/l)
-- [ ] Task selection highlighting
+- [x] KanbanBoard component with columns
+- [x] Column component
+- [x] TaskCard component
+- [x] Vim navigation (h/j/k/l)
+- [x] Task selection highlighting
 - [ ] Move task between columns (m + h/l)
 - [ ] Scroll within columns
 
@@ -85,10 +85,10 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 - [ ] Assignee selector
 
 ### 2.4 Comments
-- [ ] GET /api/v1/workspaces/{wid}/tasks/{id}/comments
-- [ ] POST /api/v1/workspaces/{wid}/tasks/{id}/comments
-- [ ] PUT /api/v1/workspaces/{wid}/tasks/{id}/comments/{cid}
-- [ ] DELETE /api/v1/workspaces/{wid}/tasks/{id}/comments/{cid}
+- [x] GET /api/v1/workspaces/{wid}/tasks/{id}/comments
+- [x] POST /api/v1/workspaces/{wid}/tasks/{id}/comments
+- [x] PUT /api/v1/workspaces/{wid}/tasks/{id}/comments/{cid}
+- [x] DELETE /api/v1/workspaces/{wid}/tasks/{id}/comments/{cid}
 - [ ] Comments list in task detail TUI
 - [ ] Add comment with timestamp
 
@@ -120,12 +120,12 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 ## Phase 4: Workspaces & Multi-user
 
 ### 4.1 Workspace API
-- [ ] GET /api/v1/workspaces - List user's workspaces
-- [ ] POST /api/v1/workspaces - Create workspace
-- [ ] GET /api/v1/workspaces/{id} - Get workspace
-- [ ] PUT /api/v1/workspaces/{id} - Update workspace
-- [ ] DELETE /api/v1/workspaces/{id} - Delete workspace
-- [ ] Role-based permissions middleware
+- [x] GET /api/v1/workspaces - List user's workspaces
+- [x] POST /api/v1/workspaces - Create workspace
+- [x] GET /api/v1/workspaces/{id} - Get workspace
+- [x] PUT /api/v1/workspaces/{id} - Update workspace
+- [x] DELETE /api/v1/workspaces/{id} - Delete workspace
+- [x] Role-based permissions middleware
 
 ### 4.2 Members & Invitations
 - [ ] GET /api/v1/workspaces/{id}/members

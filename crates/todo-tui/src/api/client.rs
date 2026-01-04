@@ -2,10 +2,10 @@ use anyhow::Result;
 use reqwest::{Client, StatusCode};
 use todo_shared::{
     api::{
-        AuthResponse, CreateTaskRequest, CreateWorkspaceRequest, LoginRequest,
-        MoveTaskRequest, RefreshRequest, RegisterRequest, UpdateTaskRequest,
-        UpdateWorkspaceRequest, CreateStatusRequest, UpdateStatusRequest,
-        CreateCommentRequest, UpdateCommentRequest, WorkspaceMemberWithUser,
+        AuthResponse, CreateCommentRequest, CreateStatusRequest, CreateTaskRequest,
+        CreateWorkspaceRequest, LoginRequest, MoveTaskRequest, RefreshRequest, RegisterRequest,
+        SearchResponse, UpdateCommentRequest, UpdateStatusRequest, UpdateTaskRequest,
+        UpdateWorkspaceRequest, WorkspaceMemberWithUser,
     },
     Comment, Task, TaskStatus, User, Workspace, WorkspaceSettings, WorkspaceWithRole,
 };
@@ -595,6 +595,41 @@ impl ApiClient {
             )))
             .header("Authorization", &auth)
             .json(&req)
+            .send()
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    // ============ Search ============
+
+    pub async fn search(
+        &self,
+        workspace_id: Uuid,
+        query: &str,
+        fuzzy: bool,
+        page: Option<u32>,
+        limit: Option<u32>,
+    ) -> Result<SearchResponse, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let mut url = self.url(&format!("/workspaces/{}/search", workspace_id));
+        url.push_str(&format!("?q={}", urlencoding::encode(query)));
+
+        if fuzzy {
+            url.push_str("&fuzzy=true");
+        }
+        if let Some(p) = page {
+            url.push_str(&format!("&page={}", p));
+        }
+        if let Some(l) = limit {
+            url.push_str(&format!("&limit={}", l));
+        }
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", &auth)
             .send()
             .await?;
 

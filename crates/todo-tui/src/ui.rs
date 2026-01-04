@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, AuthMode, InputField, NewTaskField, TaskEditField, View, VimMode};
+use todo_shared::api::SearchResultItem;
 use todo_shared::Priority;
 
 /// Returns (symbol, color) for a task's priority indicator
@@ -334,6 +335,11 @@ fn draw_dashboard(f: &mut Frame, app: &App) {
     if app.confirming_delete {
         draw_delete_confirm_popup(f, app);
     }
+
+    // Draw search popup if active
+    if app.searching {
+        draw_search_popup(f, app);
+    }
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
@@ -466,7 +472,9 @@ fn draw_kanban(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
-    let (mode, mode_color) = if app.moving_task {
+    let (mode, mode_color) = if app.searching {
+        ("SEARCH", Color::Cyan)
+    } else if app.moving_task {
         ("MOVE", Color::Magenta)
     } else if app.creating_task {
         ("CREATE", Color::Green)
@@ -479,14 +487,16 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
         }
     };
 
-    let hints = if app.moving_task {
+    let hints = if app.searching {
+        "Type to search | Enter: select | Ctrl+F: fuzzy | Esc: cancel"
+    } else if app.moving_task {
         "h/l: move task | Esc: cancel"
     } else if app.creating_task {
         "Tab: next field | Enter: create | Esc: cancel"
     } else if app.confirming_delete {
         "y: confirm | n/Esc: cancel"
     } else {
-        "n: new | d: delete | m: move | Enter: details | q: quit"
+        "/: search | n: new | d: delete | m: move | Enter: details | q: quit"
     };
 
     let status = Paragraph::new(Line::from(vec![
@@ -615,6 +625,120 @@ fn draw_delete_confirm_popup(f: &mut Frame, app: &App) {
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
     f.render_widget(hint, chunks[1]);
+}
+
+fn draw_search_popup(f: &mut Frame, app: &App) {
+    let area = centered_rect(70, 60, f.area());
+
+    f.render_widget(Clear, area);
+
+    let title = if app.search_fuzzy {
+        " Search (fuzzy) "
+    } else {
+        " Search "
+    };
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(3), // Search input
+            Constraint::Min(0),    // Results list
+            Constraint::Length(2), // Hints
+        ])
+        .split(inner);
+
+    // Search input
+    let input_block = Block::default()
+        .title(" Query ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let input = Paragraph::new(app.search_query.as_str()).block(input_block);
+    f.render_widget(input, chunks[0]);
+
+    // Results list
+    let result_items: Vec<ListItem> = app
+        .search_results
+        .iter()
+        .enumerate()
+        .map(|(i, result)| {
+            let is_selected = i == app.search_selected;
+            let style = if is_selected {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else {
+                Style::default()
+            };
+
+            match result {
+                SearchResultItem::Task(task_result) => {
+                    // Use title with optional highlight markers
+                    let title_text = task_result
+                        .title_highlights
+                        .as_ref()
+                        .map(|h| format_highlights(h))
+                        .unwrap_or_else(|| task_result.task.title.clone());
+
+                    let (priority_symbol, priority_color) = priority_indicator(task_result.task.priority);
+
+                    ListItem::new(Line::from(vec![
+                        Span::styled("  ", style),
+                        Span::styled(priority_symbol, style.fg(priority_color)),
+                        Span::styled(" ", style),
+                        Span::styled(title_text, style),
+                        Span::styled(
+                            format!(" ({:.2})", task_result.rank),
+                            style.fg(Color::DarkGray),
+                        ),
+                    ]))
+                }
+            }
+        })
+        .collect();
+
+    let results_title = if app.search_results.is_empty() && !app.search_query.is_empty() {
+        " No results ".to_string()
+    } else {
+        format!(" Results ({}) ", app.search_total)
+    };
+
+    let results_list = List::new(result_items).block(
+        Block::default()
+            .title(results_title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Gray)),
+    );
+    f.render_widget(results_list, chunks[1]);
+
+    // Hints
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::raw(": select | "),
+        Span::styled("Ctrl+F", Style::default().fg(Color::Yellow)),
+        Span::raw(": toggle fuzzy | "),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::raw(": cancel"),
+    ]))
+    .alignment(Alignment::Center);
+    f.render_widget(hint, chunks[2]);
+
+    // Set cursor position
+    f.set_cursor_position((
+        chunks[0].x + 1 + app.search_query.len() as u16,
+        chunks[0].y + 1,
+    ));
+}
+
+/// Convert highlight markers (<< >>) to plain text (simplified version)
+fn format_highlights(text: &str) -> String {
+    text.replace("<<", "").replace(">>", "")
 }
 
 fn draw_task_detail(f: &mut Frame, app: &App) {

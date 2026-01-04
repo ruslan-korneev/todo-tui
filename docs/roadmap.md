@@ -100,15 +100,15 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 ## Phase 3: Search & Filtering
 
 ### 3.1 Search Backend
-- [ ] Full-text search with PostgreSQL tsvector
-- [ ] Trigram fuzzy search (ripgrep-like speed)
-- [ ] GET /api/v1/workspaces/{wid}/search?q=...
-- [ ] Search pagination
+- [x] Full-text search with PostgreSQL tsvector
+- [x] Trigram fuzzy search (ripgrep-like speed)
+- [x] GET /api/v1/workspaces/{wid}/search?q=...
+- [x] Search pagination
 
 ### 3.2 Search TUI
-- [ ] Search panel (/ command)
-- [ ] Real-time search results
-- [ ] Navigate and select results
+- [x] Search panel (/ command)
+- [x] Real-time search results
+- [x] Navigate and select results
 - [ ] Highlight matches
 
 ### 3.3 Filtering & Ordering

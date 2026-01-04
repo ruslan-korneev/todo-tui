@@ -7,8 +7,8 @@ use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLay
 
 use crate::auth::auth_middleware;
 use crate::handlers::{
-    auth as auth_handlers, comments as comment_handlers, statuses as status_handlers,
-    tasks as task_handlers, workspaces as workspace_handlers,
+    auth as auth_handlers, comments as comment_handlers, search as search_handlers,
+    statuses as status_handlers, tasks as task_handlers, workspaces as workspace_handlers,
 };
 use crate::{Config, DbPool};
 
@@ -74,12 +74,16 @@ pub fn create_router(db: DbPool, config: Config) -> Router {
         .route("/:comment_id", patch(comment_handlers::update_comment))
         .route("/:comment_id", delete(comment_handlers::delete_comment));
 
+    // Search routes (nested under workspaces)
+    let search_routes = Router::new().route("/", get(search_handlers::search));
+
     // Protected routes with auth middleware
     let protected_routes = Router::new()
         .nest("/workspaces", workspace_routes)
         .nest("/workspaces/:id/statuses", status_routes)
         .nest("/workspaces/:id/tasks", task_routes)
         .nest("/workspaces/:id/tasks/:task_id/comments", comment_routes)
+        .nest("/workspaces/:id/search", search_routes)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

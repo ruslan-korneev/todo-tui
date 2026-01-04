@@ -38,3 +38,6 @@ tracing-subscriber.workspace = true
 # Config
 dotenvy.workspace = true
 dirs.workspace = true
+
+# URL encoding
+urlencoding = "2"

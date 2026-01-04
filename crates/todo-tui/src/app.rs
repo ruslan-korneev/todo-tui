@@ -1,8 +1,8 @@
 use anyhow::Result;
 use chrono::NaiveDate;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use todo_shared::{Comment, Priority, Task, TaskStatus, Workspace, WorkspaceWithRole, User};
-use todo_shared::api::{CreateTaskRequest, UpdateTaskRequest, WorkspaceMemberWithUser};
+use todo_shared::api::{CreateTaskRequest, SearchResultItem, UpdateTaskRequest, WorkspaceMemberWithUser};
+use todo_shared::{Comment, Priority, Task, TaskStatus, User, Workspace, WorkspaceWithRole};
 use tokio::sync::mpsc;
 
 use crate::api::ApiClient;
@@ -130,6 +130,14 @@ pub struct App {
 
     // Workspace members (for assignee selection)
     pub workspace_members: Vec<WorkspaceMemberWithUser>,
+
+    // Search state
+    pub searching: bool,
+    pub search_query: String,
+    pub search_results: Vec<SearchResultItem>,
+    pub search_total: i64,
+    pub search_selected: usize,
+    pub search_fuzzy: bool,
 }
 
 pub struct Column {
@@ -186,6 +194,12 @@ impl App {
             edit_task_time_estimate_str: String::new(),
             edit_task_assignee: None,
             workspace_members: Vec::new(),
+            searching: false,
+            search_query: String::new(),
+            search_results: Vec::new(),
+            search_total: 0,
+            search_selected: 0,
+            search_fuzzy: false,
         }
     }
 
@@ -415,6 +429,11 @@ impl App {
         key: KeyEvent,
         _tx: mpsc::Sender<AppEvent>,
     ) -> Result<bool> {
+        // Handle search popup
+        if self.searching {
+            return self.handle_search_key(key).await;
+        }
+
         // Handle create task popup
         if self.creating_task {
             match key.code {
@@ -514,10 +533,114 @@ impl App {
             KeyCode::Enter => {
                 self.open_task_detail().await;
             }
+            KeyCode::Char('/') => {
+                // Open search
+                self.searching = true;
+                self.search_query.clear();
+                self.search_results.clear();
+                self.search_selected = 0;
+                self.vim_mode = VimMode::Insert;
+            }
             _ => {}
         }
 
         Ok(false)
+    }
+
+    async fn handle_search_key(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Esc => {
+                self.searching = false;
+                self.search_query.clear();
+                self.search_results.clear();
+                self.vim_mode = VimMode::Normal;
+            }
+            KeyCode::Enter => {
+                // Navigate to selected result
+                if let Some(SearchResultItem::Task(task_result)) =
+                    self.search_results.get(self.search_selected)
+                {
+                    self.select_task_by_id(task_result.task.id);
+                    self.searching = false;
+                    self.search_query.clear();
+                    self.search_results.clear();
+                    self.vim_mode = VimMode::Normal;
+                }
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                if !self.search_results.is_empty() {
+                    self.search_selected = (self.search_selected + 1) % self.search_results.len();
+                }
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                if !self.search_results.is_empty() {
+                    self.search_selected = self
+                        .search_selected
+                        .checked_sub(1)
+                        .unwrap_or(self.search_results.len() - 1);
+                }
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Toggle fuzzy search
+                self.search_fuzzy = !self.search_fuzzy;
+                self.do_search().await;
+            }
+            KeyCode::Char(c) => {
+                self.search_query.push(c);
+                self.do_search().await;
+            }
+            KeyCode::Backspace => {
+                self.search_query.pop();
+                if self.search_query.is_empty() {
+                    self.search_results.clear();
+                    self.search_total = 0;
+                } else {
+                    self.do_search().await;
+                }
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    async fn do_search(&mut self) {
+        let workspace_id = match self.current_workspace {
+            Some(ref ws) => ws.id,
+            None => return,
+        };
+
+        if self.search_query.trim().is_empty() {
+            self.search_results.clear();
+            self.search_total = 0;
+            return;
+        }
+
+        match self
+            .api
+            .search(workspace_id, &self.search_query, self.search_fuzzy, Some(1), Some(10))
+            .await
+        {
+            Ok(response) => {
+                self.search_total = response.total;
+                self.search_results = response.results;
+                self.search_selected = 0;
+            }
+            Err(_) => {
+                // Silently ignore search errors
+            }
+        }
+    }
+
+    fn select_task_by_id(&mut self, task_id: uuid::Uuid) {
+        for (col_idx, column) in self.columns.iter().enumerate() {
+            for (task_idx, task) in column.tasks.iter().enumerate() {
+                if task.id == task_id {
+                    self.selected_column = col_idx;
+                    self.selected_task = task_idx;
+                    return;
+                }
+            }
+        }
     }
 
     async fn handle_task_detail_key(

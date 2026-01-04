@@ -7,6 +7,19 @@ use ratatui::{
 };
 
 use crate::app::{App, AuthMode, InputField, NewTaskField, TaskEditField, View, VimMode};
+use todo_shared::Priority;
+
+/// Returns (symbol, color) for a task's priority indicator
+fn priority_indicator(priority: Option<Priority>) -> (&'static str, Color) {
+    match priority {
+        Some(Priority::Highest) => ("●", Color::Red),
+        Some(Priority::High) => ("●", Color::Yellow),
+        Some(Priority::Medium) => ("●", Color::Blue),
+        Some(Priority::Low) => ("●", Color::Gray),
+        Some(Priority::Lowest) => ("●", Color::DarkGray),
+        None => ("○", Color::DarkGray),
+    }
+}
 
 pub fn draw(f: &mut Frame, app: &App) {
     // Draw based on current view
@@ -374,20 +387,40 @@ fn draw_kanban(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(Color::DarkGray)
         };
 
-        let task_lines: Vec<Line> = column
-            .tasks
-            .iter()
-            .enumerate()
-            .map(|(j, task)| {
-                let is_task_selected = is_selected && j == app.selected_task;
-                let style = if is_task_selected {
-                    Style::default().bg(Color::DarkGray).fg(Color::White)
-                } else {
-                    Style::default()
-                };
-                Line::from(Span::styled(format!(" {} ", task.title), style))
-            })
-            .collect();
+        // Build multi-line task cards
+        let mut task_lines: Vec<Line> = Vec::new();
+        for (j, task) in column.tasks.iter().enumerate() {
+            let is_task_selected = is_selected && j == app.selected_task;
+            let bg_style = if is_task_selected {
+                Style::default().bg(Color::DarkGray)
+            } else {
+                Style::default()
+            };
+
+            // Line 1: Priority indicator + title
+            let (priority_symbol, priority_color) = priority_indicator(task.priority);
+            task_lines.push(Line::from(vec![
+                Span::styled(" ", bg_style),
+                Span::styled(priority_symbol, bg_style.fg(priority_color)),
+                Span::styled(" ", bg_style),
+                Span::styled(&task.title, bg_style.fg(Color::White)),
+            ]));
+
+            // Line 2: Due date (if set)
+            if let Some(due_date) = task.due_date {
+                let date_str = due_date.format("%b %d").to_string();
+                task_lines.push(Line::from(vec![
+                    Span::styled("   ", bg_style),
+                    Span::styled("📅 ", bg_style.fg(Color::DarkGray)),
+                    Span::styled(date_str, bg_style.fg(Color::DarkGray)),
+                ]));
+            }
+
+            // Empty line between cards (separator)
+            if j < column.tasks.len() - 1 {
+                task_lines.push(Line::from(""));
+            }
+        }
 
         let column_widget = Paragraph::new(task_lines).block(
             Block::default()

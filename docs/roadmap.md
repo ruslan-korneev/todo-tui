@@ -70,7 +70,7 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 ### 2.2 Kanban TUI
 - [x] KanbanBoard component with columns
 - [x] Column component
-- [x] TaskCard component
+- [x] TaskCard component (with priority indicator and due date)
 - [x] Vim navigation (h/j/k/l)
 - [x] Task selection highlighting
 - [x] Move task between columns (m + h/l)

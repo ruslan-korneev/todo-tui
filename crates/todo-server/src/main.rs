@@ -1,12 +1,18 @@
 use std::net::SocketAddr;
 
-use axum::Router;
 use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod auth;
 mod config;
+mod db;
 mod error;
+mod handlers;
 mod routes;
+
+pub use config::Config;
+pub use db::DbPool;
+pub use error::AppError;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -20,8 +26,12 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let config = config::Config::from_env()?;
-    let app = routes::create_router().await?;
+    let config = Config::from_env()?;
+    let db_pool = db::create_pool(&config.database_url).await?;
+
+    tracing::info!("Connected to database");
+
+    let app = routes::create_router(db_pool, config.clone());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     tracing::info!("Server listening on {}", addr);

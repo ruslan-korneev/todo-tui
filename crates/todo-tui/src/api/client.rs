@@ -511,6 +511,10 @@ impl ApiClient {
             if let Some(q) = &params.q {
                 query_parts.push(format!("q={}", urlencoding::encode(q)));
             }
+            if let Some(tag_ids) = &params.tag_ids {
+                let ids: Vec<String> = tag_ids.iter().map(|id| id.to_string()).collect();
+                query_parts.push(format!("tag_ids={}", ids.join(",")));
+            }
             if let Some(order_by) = &params.order_by {
                 query_parts.push(format!("order_by={}", order_by));
             }

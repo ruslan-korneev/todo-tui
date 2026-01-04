@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AuthMode, InputField, NewTaskField, TaskEditField, View, VimMode};
+use crate::app::{App, AuthMode, DueDateMode, FilterPanelSection, InputField, NewTaskField, TaskEditField, View, VimMode, SORT_FIELDS};
 use todo_shared::api::SearchResultItem;
 use todo_shared::Priority;
 
@@ -373,6 +373,16 @@ fn draw_dashboard(f: &mut Frame, app: &App) {
     if app.tag_management_visible {
         draw_tag_management_popup(f, app);
     }
+
+    // Draw filter panel popup if active
+    if app.filter_panel_visible {
+        draw_filter_panel(f, app);
+    }
+
+    // Draw preset panel popup if active
+    if app.preset_panel_visible {
+        draw_preset_panel(f, app);
+    }
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
@@ -405,6 +415,17 @@ fn draw_filter_bar(f: &mut Frame, area: Rect, app: &App) {
         .bg(Color::DarkGray)
         .fg(Color::White);
 
+    let mut has_filters = false;
+
+    // Text search filter
+    if let Some(ref q) = app.active_filters.q {
+        if !q.is_empty() {
+            spans.push(Span::styled(format!(" q: \"{}\" ", q), filter_style));
+            spans.push(Span::raw(" "));
+            has_filters = true;
+        }
+    }
+
     // Priority filter
     if let Some(priority) = &app.active_filters.priority {
         let priority_str = match priority {
@@ -416,6 +437,30 @@ fn draw_filter_bar(f: &mut Frame, area: Rect, app: &App) {
         };
         spans.push(Span::styled(format!(" Priority: {} ", priority_str), filter_style));
         spans.push(Span::raw(" "));
+        has_filters = true;
+    }
+
+    // Tags filter
+    if let Some(ref tag_ids) = app.active_filters.tag_ids {
+        if !tag_ids.is_empty() {
+            // Get tag names for display
+            let tag_names: Vec<&str> = tag_ids
+                .iter()
+                .filter_map(|id| app.workspace_tags.iter().find(|t| &t.id == id))
+                .map(|t| t.name.as_str())
+                .take(2)
+                .collect();
+            let remaining = tag_ids.len().saturating_sub(2);
+
+            let tag_display = if remaining > 0 {
+                format!(" Tags: {} +{} ", tag_names.join(", "), remaining)
+            } else {
+                format!(" Tags: {} ", tag_names.join(", "))
+            };
+            spans.push(Span::styled(tag_display, Style::default().bg(Color::Magenta).fg(Color::White)));
+            spans.push(Span::raw(" "));
+            has_filters = true;
+        }
     }
 
     // Assignee filter
@@ -428,17 +473,20 @@ fn draw_filter_bar(f: &mut Frame, area: Rect, app: &App) {
             .unwrap_or("Unknown");
         spans.push(Span::styled(format!(" Assignee: {} ", assignee_name), filter_style));
         spans.push(Span::raw(" "));
+        has_filters = true;
     }
 
     // Due date filters
     if let Some(date) = &app.active_filters.due_before {
-        spans.push(Span::styled(format!(" Due before: {} ", date), filter_style));
+        spans.push(Span::styled(format!(" Due <{} ", date), filter_style));
         spans.push(Span::raw(" "));
+        has_filters = true;
     }
 
     if let Some(date) = &app.active_filters.due_after {
-        spans.push(Span::styled(format!(" Due after: {} ", date), filter_style));
+        spans.push(Span::styled(format!(" Due >{} ", date), filter_style));
         spans.push(Span::raw(" "));
+        has_filters = true;
     }
 
     // Sort indicator
@@ -447,21 +495,28 @@ fn draw_filter_bar(f: &mut Frame, area: Rect, app: &App) {
             .active_filters
             .order
             .as_ref()
-            .map(|o| if o == "DESC" { " ↓" } else { " ↑" })
+            .map(|o| if o == "DESC" { "↑" } else { "↓" })
             .unwrap_or("");
         spans.push(Span::styled(
-            format!(" Sort: {}{} ", order_by, direction),
+            format!(" Sort: {} {} ", order_by, direction),
             Style::default().bg(Color::Blue).fg(Color::White),
         ));
+        has_filters = true;
     }
 
     // Show hint if no filters active but bar is visible
-    if spans.len() == 1 {
+    if !has_filters {
         spans.push(Span::styled(
-            "None (press 'f' to hide, ':clear' to reset)",
+            "None ",
             Style::default().fg(Color::DarkGray),
         ));
     }
+
+    // Add keyboard hints
+    spans.push(Span::styled(
+        "│ F: panel  f: hide  :clear",
+        Style::default().fg(Color::DarkGray),
+    ));
 
     let filter_bar = Paragraph::new(Line::from(spans))
         .style(Style::default().bg(Color::Black));
@@ -577,13 +632,23 @@ fn draw_kanban(f: &mut Frame, area: Rect, app: &App) {
             // Build task content lines
             let mut task_content: Vec<Line> = Vec::new();
 
-            // Line 1: Priority indicator + title
+            // Line 1: Priority indicator + title (with search highlighting if filter active)
             let (priority_symbol, priority_color) = priority_indicator(task.priority);
-            task_content.push(Line::from(vec![
-                Span::styled(priority_symbol, Style::default().fg(priority_color)),
-                Span::styled(" ", Style::default()),
-                Span::styled(&task.title, Style::default().fg(Color::White)),
-            ]));
+            let title_spans = if let Some(ref query) = app.active_filters.q {
+                let mut spans = vec![
+                    Span::styled(priority_symbol, Style::default().fg(priority_color)),
+                    Span::styled(" ", Style::default()),
+                ];
+                spans.extend(highlight_search_matches(&task.title, query, Style::default().fg(Color::White)));
+                spans
+            } else {
+                vec![
+                    Span::styled(priority_symbol, Style::default().fg(priority_color)),
+                    Span::styled(" ", Style::default()),
+                    Span::styled(task.title.clone(), Style::default().fg(Color::White)),
+                ]
+            };
+            task_content.push(Line::from(title_spans));
 
             // Line 2: Due date (if set)
             if let Some(due_date) = task.due_date {
@@ -1059,6 +1124,43 @@ fn draw_tag_management_popup(f: &mut Frame, app: &App) {
     }
 }
 
+/// Highlight search query matches in text (client-side, case-insensitive)
+fn highlight_search_matches(text: &str, query: &str, base_style: Style) -> Vec<Span<'static>> {
+    if query.is_empty() {
+        return vec![Span::styled(text.to_string(), base_style)];
+    }
+
+    let highlight_style = base_style.fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let lower_text = text.to_lowercase();
+    let lower_query = query.to_lowercase();
+
+    let mut spans = Vec::new();
+    let mut last_end = 0;
+
+    for (start, _) in lower_text.match_indices(&lower_query) {
+        // Add text before match
+        if start > last_end {
+            spans.push(Span::styled(text[last_end..start].to_string(), base_style));
+        }
+        // Add highlighted match (using original case)
+        let end = start + query.len();
+        spans.push(Span::styled(text[start..end].to_string(), highlight_style));
+        last_end = end;
+    }
+
+    // Add remaining text
+    if last_end < text.len() {
+        spans.push(Span::styled(text[last_end..].to_string(), base_style));
+    }
+
+    // Return at least one span if empty
+    if spans.is_empty() {
+        spans.push(Span::styled(text.to_string(), base_style));
+    }
+
+    spans
+}
+
 /// Parse highlight markers (<< >>) into styled spans
 fn parse_highlights_to_spans<'a>(text: &'a str, base_style: Style) -> Vec<Span<'a>> {
     let highlight_style = base_style.fg(Color::Yellow).add_modifier(Modifier::BOLD);
@@ -1530,6 +1632,316 @@ fn draw_error_popup(f: &mut Frame, error: &str) {
         .block(block);
 
     f.render_widget(text, area);
+}
+
+fn draw_filter_panel(f: &mut Frame, app: &App) {
+    let area = centered_rect(60, 70, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Filter Tasks ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Split into sections
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(3), // Priority
+            Constraint::Length(5), // Tags (scrollable)
+            Constraint::Length(3), // Assignee
+            Constraint::Length(3), // Due Date
+            Constraint::Length(3), // Order By
+            Constraint::Length(3), // Actions
+            Constraint::Min(0),    // Spacer
+            Constraint::Length(2), // Hints
+        ])
+        .split(inner);
+
+    // Helper for section styling
+    let section_style = |section: FilterPanelSection| -> Style {
+        if app.filter_panel_section == section {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::Gray)
+        }
+    };
+
+    // Priority section
+    let priorities: &[Option<Priority>] = &[
+        None,
+        Some(Priority::Highest),
+        Some(Priority::High),
+        Some(Priority::Medium),
+        Some(Priority::Low),
+        Some(Priority::Lowest),
+    ];
+    let mut priority_spans: Vec<Span> = vec![Span::styled(" ", Style::default())];
+    for (i, p) in priorities.iter().enumerate() {
+        let label = match p {
+            None => "None",
+            Some(Priority::Highest) => "Highest",
+            Some(Priority::High) => "High",
+            Some(Priority::Medium) => "Medium",
+            Some(Priority::Low) => "Low",
+            Some(Priority::Lowest) => "Lowest",
+        };
+        let is_selected = i == app.filter_priority_cursor;
+        let marker = if is_selected { "●" } else { "○" };
+        let style = if is_selected {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        priority_spans.push(Span::styled(format!("[{} {}] ", marker, label), style));
+    }
+    let priority_block = Block::default()
+        .title(" Priority (h/l) ")
+        .borders(Borders::ALL)
+        .border_style(section_style(FilterPanelSection::Priority));
+    let priority_widget = Paragraph::new(Line::from(priority_spans)).block(priority_block);
+    f.render_widget(priority_widget, chunks[0]);
+
+    // Tags section
+    let tag_lines: Vec<Line> = if app.workspace_tags.is_empty() {
+        vec![Line::from(Span::styled("  No tags available", Style::default().fg(Color::DarkGray)))]
+    } else {
+        app.workspace_tags
+            .iter()
+            .enumerate()
+            .map(|(i, tag)| {
+                let is_selected = app.filter_selected_tags.contains(&tag.id);
+                let is_cursor = app.filter_panel_section == FilterPanelSection::Tags && i == app.filter_tag_cursor;
+                let checkbox = if is_selected { "[x]" } else { "[ ]" };
+                let tag_color = tag.color.as_ref()
+                    .and_then(|c| parse_hex_color(c))
+                    .unwrap_or(Color::Gray);
+
+                let style = if is_cursor {
+                    Style::default().bg(Color::DarkGray).fg(Color::White)
+                } else {
+                    Style::default()
+                };
+
+                Line::from(vec![
+                    Span::styled(format!(" {} ", checkbox), style),
+                    Span::styled(
+                        format!(" {} ", tag.name),
+                        Style::default().bg(tag_color).fg(Color::Black),
+                    ),
+                ])
+            })
+            .collect()
+    };
+    let tag_block = Block::default()
+        .title(" Tags (j/k, Space) ")
+        .borders(Borders::ALL)
+        .border_style(section_style(FilterPanelSection::Tags));
+    let tag_widget = Paragraph::new(tag_lines).block(tag_block);
+    f.render_widget(tag_widget, chunks[1]);
+
+    // Assignee section
+    let assignee_str = if app.filter_assignee_cursor == 0 {
+        "None".to_string()
+    } else {
+        app.workspace_members
+            .get(app.filter_assignee_cursor - 1)
+            .map(|m| m.display_name.clone())
+            .unwrap_or_else(|| "Unknown".to_string())
+    };
+    let assignee_block = Block::default()
+        .title(" Assignee (h/l) ")
+        .borders(Borders::ALL)
+        .border_style(section_style(FilterPanelSection::Assignee));
+    let assignee_widget = Paragraph::new(Line::from(vec![
+        Span::styled(" < ", Style::default().fg(Color::DarkGray)),
+        Span::styled(&assignee_str, Style::default().fg(Color::White)),
+        Span::styled(" > ", Style::default().fg(Color::DarkGray)),
+    ])).block(assignee_block);
+    f.render_widget(assignee_widget, chunks[2]);
+
+    // Due Date section
+    let due_mode_str = match app.filter_due_mode {
+        DueDateMode::Before => "Before",
+        DueDateMode::After => "After",
+    };
+    let due_date_block = Block::default()
+        .title(" Due Date (h/l mode, i edit) ")
+        .borders(Borders::ALL)
+        .border_style(section_style(FilterPanelSection::DueDate));
+    let due_date_widget = Paragraph::new(Line::from(vec![
+        Span::styled(format!(" [{}] ", due_mode_str), Style::default().fg(Color::Cyan)),
+        Span::styled(
+            if app.filter_due_input.is_empty() { "YYYY-MM-DD" } else { &app.filter_due_input },
+            Style::default().fg(if app.filter_due_input.is_empty() { Color::DarkGray } else { Color::White }),
+        ),
+    ])).block(due_date_block);
+    f.render_widget(due_date_widget, chunks[3]);
+
+    // Order By section
+    let (sort_field, sort_label) = SORT_FIELDS.get(app.filter_order_cursor).unwrap_or(&("position", "Position"));
+    let direction = if app.filter_order_desc { "↑" } else { "↓" };
+    let order_block = Block::default()
+        .title(" Order By (h/l field, Space dir) ")
+        .borders(Borders::ALL)
+        .border_style(section_style(FilterPanelSection::OrderBy));
+    let order_widget = Paragraph::new(Line::from(vec![
+        Span::styled(" < ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{} {}", sort_label, direction), Style::default().fg(Color::White)),
+        Span::styled(" > ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!(" ({})", sort_field), Style::default().fg(Color::DarkGray)),
+    ])).block(order_block);
+    f.render_widget(order_widget, chunks[4]);
+
+    // Actions section
+    let actions_style = section_style(FilterPanelSection::Actions);
+    let actions_block = Block::default()
+        .title(" Actions ")
+        .borders(Borders::ALL)
+        .border_style(actions_style);
+    let actions_widget = Paragraph::new(Line::from(vec![
+        Span::styled(" [Enter: Apply] ", Style::default().fg(Color::Green)),
+        Span::styled(" [c: Clear] ", Style::default().fg(Color::Yellow)),
+        Span::styled(" [s: Save Preset] ", Style::default().fg(Color::Cyan)),
+    ])).block(actions_block);
+    f.render_widget(actions_widget, chunks[5]);
+
+    // Hints
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled("Tab/j/k", Style::default().fg(Color::Yellow)),
+        Span::raw(": section | "),
+        Span::styled("h/l", Style::default().fg(Color::Yellow)),
+        Span::raw(": value | "),
+        Span::styled("Space", Style::default().fg(Color::Yellow)),
+        Span::raw(": toggle | "),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::raw(": cancel"),
+    ]))
+    .alignment(Alignment::Center);
+    f.render_widget(hint, chunks[7]);
+}
+
+fn draw_preset_panel(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 50, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Filter Presets ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Min(0),    // Preset list
+            Constraint::Length(3), // New preset input (if creating)
+            Constraint::Length(2), // Hints
+        ])
+        .split(inner);
+
+    // Preset list
+    let preset_items: Vec<ListItem> = app
+        .filter_presets
+        .iter()
+        .enumerate()
+        .map(|(i, preset)| {
+            let is_selected = i == app.preset_list_cursor;
+            let style = if is_selected {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else {
+                Style::default()
+            };
+
+            // Build a description of the preset
+            let mut desc_parts = Vec::new();
+            if preset.filters.priority.is_some() {
+                desc_parts.push("priority");
+            }
+            if preset.filters.assigned_to.is_some() {
+                desc_parts.push("assignee");
+            }
+            if preset.filters.due_before.is_some() || preset.filters.due_after.is_some() {
+                desc_parts.push("due date");
+            }
+            if preset.filters.order_by.is_some() {
+                desc_parts.push("sorted");
+            }
+            let desc = if desc_parts.is_empty() {
+                "no filters".to_string()
+            } else {
+                desc_parts.join(", ")
+            };
+
+            ListItem::new(Line::from(vec![
+                Span::styled("  ", style),
+                Span::styled(&preset.name, style.add_modifier(Modifier::BOLD)),
+                Span::styled(format!(" ({})", desc), style.fg(Color::DarkGray)),
+            ]))
+        })
+        .collect();
+
+    let list_title = if app.filter_presets.is_empty() {
+        " No presets - press 'n' to create ".to_string()
+    } else {
+        format!(" Presets ({}) ", app.filter_presets.len())
+    };
+
+    let list = List::new(preset_items).block(
+        Block::default()
+            .title(list_title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Gray)),
+    );
+    f.render_widget(list, chunks[0]);
+
+    // New preset input (if creating)
+    if app.creating_preset {
+        let input_block = Block::default()
+            .title(" Preset Name ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow));
+        let input = Paragraph::new(app.new_preset_name.as_str()).block(input_block);
+        f.render_widget(input, chunks[1]);
+
+        // Set cursor position
+        f.set_cursor_position((
+            chunks[1].x + 1 + app.new_preset_name.len() as u16,
+            chunks[1].y + 1,
+        ));
+    }
+
+    // Hints
+    let hint = if app.creating_preset {
+        Paragraph::new(Line::from(vec![
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(": save | "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(": cancel"),
+        ]))
+    } else {
+        Paragraph::new(Line::from(vec![
+            Span::styled("j/k", Style::default().fg(Color::Yellow)),
+            Span::raw(": select | "),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(": load | "),
+            Span::styled("n", Style::default().fg(Color::Yellow)),
+            Span::raw(": new | "),
+            Span::styled("d", Style::default().fg(Color::Yellow)),
+            Span::raw(": delete | "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(": close"),
+        ]))
+    }
+    .alignment(Alignment::Center);
+    f.render_widget(hint, chunks[2]);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

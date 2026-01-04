@@ -73,6 +73,67 @@ pub enum TagManagementMode {
     Edit,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FilterPanelSection {
+    #[default]
+    Priority,
+    Tags,
+    Assignee,
+    DueDate,
+    OrderBy,
+    Actions,
+}
+
+impl FilterPanelSection {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Priority => Self::Tags,
+            Self::Tags => Self::Assignee,
+            Self::Assignee => Self::DueDate,
+            Self::DueDate => Self::OrderBy,
+            Self::OrderBy => Self::Actions,
+            Self::Actions => Self::Priority,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Priority => Self::Actions,
+            Self::Tags => Self::Priority,
+            Self::Assignee => Self::Tags,
+            Self::DueDate => Self::Assignee,
+            Self::OrderBy => Self::DueDate,
+            Self::Actions => Self::OrderBy,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DueDateMode {
+    #[default]
+    Before,
+    After,
+}
+
+impl DueDateMode {
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Before => Self::After,
+            Self::After => Self::Before,
+        }
+    }
+}
+
+/// Sort field options for the filter panel
+pub const SORT_FIELDS: &[(&str, &str)] = &[
+    ("position", "Position"),
+    ("title", "Title"),
+    ("priority", "Priority"),
+    ("due_date", "Due Date"),
+    ("created_at", "Created"),
+    ("updated_at", "Updated"),
+];
+
 #[derive(Debug)]
 #[allow(dead_code)] // Event variants for future async operations
 pub enum AppEvent {
@@ -163,6 +224,24 @@ pub struct App {
     // Filter state
     pub active_filters: TaskListParams,
     pub filter_bar_visible: bool,
+
+    // Filter panel state
+    pub filter_panel_visible: bool,
+    pub filter_panel_section: FilterPanelSection,
+    pub filter_priority_cursor: usize,        // 0=None, 1-5=priorities
+    pub filter_tag_cursor: usize,
+    pub filter_selected_tags: Vec<uuid::Uuid>,
+    pub filter_assignee_cursor: usize,        // 0=None, 1..=N=members
+    pub filter_due_mode: DueDateMode,
+    pub filter_due_input: String,
+    pub filter_order_cursor: usize,           // Index into SORT_FIELDS
+    pub filter_order_desc: bool,
+
+    // Preset panel state
+    pub preset_panel_visible: bool,
+    pub preset_list_cursor: usize,
+    pub creating_preset: bool,
+    pub new_preset_name: String,
 
     // Command mode
     pub command_mode: bool,
@@ -255,6 +334,20 @@ impl App {
             search_fuzzy: false,
             active_filters: TaskListParams::default(),
             filter_bar_visible: false,
+            filter_panel_visible: false,
+            filter_panel_section: FilterPanelSection::default(),
+            filter_priority_cursor: 0,
+            filter_tag_cursor: 0,
+            filter_selected_tags: Vec::new(),
+            filter_assignee_cursor: 0,
+            filter_due_mode: DueDateMode::default(),
+            filter_due_input: String::new(),
+            filter_order_cursor: 0,
+            filter_order_desc: false,
+            preset_panel_visible: false,
+            preset_list_cursor: 0,
+            creating_preset: false,
+            new_preset_name: String::new(),
             command_mode: false,
             command_input: String::new(),
             filter_presets: UserPreferences::load()
@@ -513,6 +606,16 @@ impl App {
             return self.handle_tag_management_key(key).await;
         }
 
+        // Handle filter panel popup
+        if self.filter_panel_visible {
+            return self.handle_filter_panel_key(key).await;
+        }
+
+        // Handle preset panel popup
+        if self.preset_panel_visible {
+            return self.handle_preset_panel_key(key).await;
+        }
+
         // Handle create task popup
         if self.creating_task {
             match key.code {
@@ -638,6 +741,17 @@ impl App {
                 self.tag_create_name.clear();
                 self.tag_create_color_idx = 0;
                 self.tag_edit_id = None;
+            }
+            KeyCode::Char('F') => {
+                // Open filter panel
+                self.open_filter_panel().await;
+            }
+            KeyCode::Char('P') => {
+                // Open preset panel
+                self.preset_panel_visible = true;
+                self.preset_list_cursor = 0;
+                self.creating_preset = false;
+                self.new_preset_name.clear();
             }
             _ => {}
         }
@@ -915,6 +1029,386 @@ impl App {
         }
     }
 
+    /// Open the filter panel and populate it with current filter state
+    async fn open_filter_panel(&mut self) {
+        // Load workspace members for assignee selection
+        if let Some(ref workspace) = self.current_workspace {
+            if let Ok(members) = self.api.list_members(workspace.id).await {
+                self.workspace_members = members;
+            }
+        }
+
+        self.filter_panel_visible = true;
+        self.filter_panel_section = FilterPanelSection::Priority;
+
+        // Initialize from current filters
+        self.filter_priority_cursor = match self.active_filters.priority {
+            None => 0,
+            Some(Priority::Highest) => 1,
+            Some(Priority::High) => 2,
+            Some(Priority::Medium) => 3,
+            Some(Priority::Low) => 4,
+            Some(Priority::Lowest) => 5,
+        };
+
+        // Initialize tag selection from current filters
+        self.filter_selected_tags = self.active_filters.tag_ids.clone().unwrap_or_default();
+        self.filter_tag_cursor = 0;
+
+        // Initialize assignee
+        self.filter_assignee_cursor = if let Some(assigned_id) = self.active_filters.assigned_to {
+            self.workspace_members
+                .iter()
+                .position(|m| m.user_id == assigned_id)
+                .map(|i| i + 1)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        // Initialize due date
+        if let Some(date) = self.active_filters.due_before {
+            self.filter_due_mode = DueDateMode::Before;
+            self.filter_due_input = date.to_string();
+        } else if let Some(date) = self.active_filters.due_after {
+            self.filter_due_mode = DueDateMode::After;
+            self.filter_due_input = date.to_string();
+        } else {
+            self.filter_due_mode = DueDateMode::Before;
+            self.filter_due_input.clear();
+        }
+
+        // Initialize order by
+        self.filter_order_cursor = self.active_filters.order_by
+            .as_ref()
+            .and_then(|field| SORT_FIELDS.iter().position(|(f, _)| f == field))
+            .unwrap_or(0);
+        self.filter_order_desc = self.active_filters.order
+            .as_ref()
+            .map(|o| o == "DESC")
+            .unwrap_or(false);
+    }
+
+    async fn handle_filter_panel_key(&mut self, key: KeyEvent) -> Result<bool> {
+        // Handle insert mode for date input
+        if self.vim_mode == VimMode::Insert && self.filter_panel_section == FilterPanelSection::DueDate {
+            match key.code {
+                KeyCode::Esc => {
+                    self.vim_mode = VimMode::Normal;
+                }
+                KeyCode::Enter => {
+                    self.vim_mode = VimMode::Normal;
+                }
+                // Allow navigation keys to exit insert mode and navigate
+                KeyCode::Tab => {
+                    self.vim_mode = VimMode::Normal;
+                    self.filter_panel_section = self.filter_panel_section.next();
+                }
+                KeyCode::BackTab => {
+                    self.vim_mode = VimMode::Normal;
+                    self.filter_panel_section = self.filter_panel_section.prev();
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.vim_mode = VimMode::Normal;
+                    self.filter_panel_section = self.filter_panel_section.next();
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.vim_mode = VimMode::Normal;
+                    self.filter_panel_section = self.filter_panel_section.prev();
+                }
+                KeyCode::Char(c) => {
+                    // Only allow date characters
+                    if c.is_ascii_digit() || c == '-' {
+                        self.filter_due_input.push(c);
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.filter_due_input.pop();
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.filter_panel_visible = false;
+            }
+            KeyCode::Tab | KeyCode::Char('j') | KeyCode::Down => {
+                self.filter_panel_section = self.filter_panel_section.next();
+            }
+            KeyCode::BackTab | KeyCode::Char('k') | KeyCode::Up => {
+                self.filter_panel_section = self.filter_panel_section.prev();
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.filter_panel_prev_value();
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                self.filter_panel_next_value();
+            }
+            KeyCode::Char(' ') => {
+                // Toggle selection/direction based on section
+                match self.filter_panel_section {
+                    FilterPanelSection::Tags => {
+                        if let Some(tag) = self.workspace_tags.get(self.filter_tag_cursor) {
+                            let tag_id = tag.id;
+                            if self.filter_selected_tags.contains(&tag_id) {
+                                self.filter_selected_tags.retain(|&id| id != tag_id);
+                            } else {
+                                self.filter_selected_tags.push(tag_id);
+                            }
+                        }
+                    }
+                    FilterPanelSection::OrderBy => {
+                        self.filter_order_desc = !self.filter_order_desc;
+                    }
+                    _ => {}
+                }
+            }
+            KeyCode::Char('i') => {
+                // Enter insert mode for date
+                if self.filter_panel_section == FilterPanelSection::DueDate {
+                    self.vim_mode = VimMode::Insert;
+                }
+            }
+            KeyCode::Enter => {
+                // Apply filters and close
+                self.apply_filter_panel().await;
+                self.filter_panel_visible = false;
+            }
+            KeyCode::Char('c') => {
+                // Clear all filters
+                self.filter_priority_cursor = 0;
+                self.filter_selected_tags.clear();
+                self.filter_assignee_cursor = 0;
+                self.filter_due_input.clear();
+                self.filter_order_cursor = 0;
+                self.filter_order_desc = false;
+            }
+            KeyCode::Char('s') => {
+                // Save as preset - open preset panel in create mode
+                self.filter_panel_visible = false;
+                self.preset_panel_visible = true;
+                self.creating_preset = true;
+                self.new_preset_name.clear();
+                self.vim_mode = VimMode::Insert;
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    fn filter_panel_next_value(&mut self) {
+        match self.filter_panel_section {
+            FilterPanelSection::Priority => {
+                self.filter_priority_cursor = (self.filter_priority_cursor + 1) % 6;
+            }
+            FilterPanelSection::Tags => {
+                if !self.workspace_tags.is_empty() {
+                    self.filter_tag_cursor = (self.filter_tag_cursor + 1) % self.workspace_tags.len();
+                }
+            }
+            FilterPanelSection::Assignee => {
+                let max = self.workspace_members.len() + 1; // +1 for "None"
+                self.filter_assignee_cursor = (self.filter_assignee_cursor + 1) % max;
+            }
+            FilterPanelSection::DueDate => {
+                self.filter_due_mode = self.filter_due_mode.toggle();
+            }
+            FilterPanelSection::OrderBy => {
+                self.filter_order_cursor = (self.filter_order_cursor + 1) % SORT_FIELDS.len();
+            }
+            FilterPanelSection::Actions => {
+                // No h/l action in Actions section
+            }
+        }
+    }
+
+    fn filter_panel_prev_value(&mut self) {
+        match self.filter_panel_section {
+            FilterPanelSection::Priority => {
+                self.filter_priority_cursor = self.filter_priority_cursor
+                    .checked_sub(1)
+                    .unwrap_or(5);
+            }
+            FilterPanelSection::Tags => {
+                if !self.workspace_tags.is_empty() {
+                    self.filter_tag_cursor = self.filter_tag_cursor
+                        .checked_sub(1)
+                        .unwrap_or(self.workspace_tags.len() - 1);
+                }
+            }
+            FilterPanelSection::Assignee => {
+                let max = self.workspace_members.len(); // 0 = None, 1..max = members
+                self.filter_assignee_cursor = self.filter_assignee_cursor
+                    .checked_sub(1)
+                    .unwrap_or(max);
+            }
+            FilterPanelSection::DueDate => {
+                self.filter_due_mode = self.filter_due_mode.toggle();
+            }
+            FilterPanelSection::OrderBy => {
+                self.filter_order_cursor = self.filter_order_cursor
+                    .checked_sub(1)
+                    .unwrap_or(SORT_FIELDS.len() - 1);
+            }
+            FilterPanelSection::Actions => {
+                // No h/l action in Actions section
+            }
+        }
+    }
+
+    async fn apply_filter_panel(&mut self) {
+        // Priority
+        self.active_filters.priority = match self.filter_priority_cursor {
+            0 => None,
+            1 => Some(Priority::Highest),
+            2 => Some(Priority::High),
+            3 => Some(Priority::Medium),
+            4 => Some(Priority::Low),
+            5 => Some(Priority::Lowest),
+            _ => None,
+        };
+
+        // Tags
+        self.active_filters.tag_ids = if self.filter_selected_tags.is_empty() {
+            None
+        } else {
+            Some(self.filter_selected_tags.clone())
+        };
+
+        // Assignee
+        self.active_filters.assigned_to = if self.filter_assignee_cursor == 0 {
+            None
+        } else {
+            self.workspace_members
+                .get(self.filter_assignee_cursor - 1)
+                .map(|m| m.user_id)
+        };
+
+        // Due date
+        self.active_filters.due_before = None;
+        self.active_filters.due_after = None;
+        if !self.filter_due_input.is_empty() {
+            if let Ok(date) = self.filter_due_input.parse::<NaiveDate>() {
+                match self.filter_due_mode {
+                    DueDateMode::Before => self.active_filters.due_before = Some(date),
+                    DueDateMode::After => self.active_filters.due_after = Some(date),
+                }
+            }
+        }
+
+        // Order by
+        if let Some((field, _)) = SORT_FIELDS.get(self.filter_order_cursor) {
+            self.active_filters.order_by = Some(field.to_string());
+            self.active_filters.order = Some(if self.filter_order_desc { "DESC" } else { "ASC" }.to_string());
+        }
+
+        // Show filter bar if any filters active
+        self.filter_bar_visible = self.active_filters.priority.is_some()
+            || self.active_filters.assigned_to.is_some()
+            || self.active_filters.due_before.is_some()
+            || self.active_filters.due_after.is_some()
+            || self.active_filters.tag_ids.is_some()
+            || self.active_filters.order_by.is_some();
+
+        // Reload data with new filters
+        self.reload_workspace_data().await;
+    }
+
+    async fn handle_preset_panel_key(&mut self, key: KeyEvent) -> Result<bool> {
+        if self.creating_preset {
+            // Handle preset name input
+            match key.code {
+                KeyCode::Esc => {
+                    self.creating_preset = false;
+                    self.new_preset_name.clear();
+                    self.vim_mode = VimMode::Normal;
+                }
+                KeyCode::Enter => {
+                    if !self.new_preset_name.trim().is_empty() {
+                        self.save_current_as_preset();
+                    }
+                    self.creating_preset = false;
+                    self.vim_mode = VimMode::Normal;
+                }
+                KeyCode::Char(c) => {
+                    self.new_preset_name.push(c);
+                }
+                KeyCode::Backspace => {
+                    self.new_preset_name.pop();
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.preset_panel_visible = false;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.filter_presets.is_empty() {
+                    self.preset_list_cursor = (self.preset_list_cursor + 1) % self.filter_presets.len();
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if !self.filter_presets.is_empty() {
+                    self.preset_list_cursor = self.preset_list_cursor
+                        .checked_sub(1)
+                        .unwrap_or(self.filter_presets.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Enter => {
+                // Load selected preset
+                if let Some(preset) = self.filter_presets.get(self.preset_list_cursor) {
+                    self.active_filters = preset.filters.clone();
+                    self.filter_bar_visible = true;
+                    self.preset_panel_visible = false;
+                    self.reload_workspace_data().await;
+                }
+            }
+            KeyCode::Char('n') => {
+                // Create new preset from current filters
+                self.creating_preset = true;
+                self.new_preset_name.clear();
+                self.vim_mode = VimMode::Insert;
+            }
+            KeyCode::Char('d') => {
+                // Delete selected preset
+                if !self.filter_presets.is_empty() {
+                    self.filter_presets.remove(self.preset_list_cursor);
+                    if self.preset_list_cursor >= self.filter_presets.len() && !self.filter_presets.is_empty() {
+                        self.preset_list_cursor = self.filter_presets.len() - 1;
+                    }
+                    self.save_presets();
+                }
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    fn save_current_as_preset(&mut self) {
+        let preset = FilterPreset {
+            name: self.new_preset_name.trim().to_string(),
+            filters: self.active_filters.clone(),
+        };
+        self.filter_presets.push(preset);
+        self.new_preset_name.clear();
+        self.save_presets();
+    }
+
+    fn save_presets(&self) {
+        let prefs = UserPreferences {
+            filter_presets: self.filter_presets.clone(),
+        };
+        if let Err(e) = prefs.save() {
+            // Log error but don't fail
+            eprintln!("Failed to save presets: {}", e);
+        }
+    }
+
     async fn execute_command(&mut self, cmd: &str) -> Result<(), String> {
         let parts: Vec<&str> = cmd.trim().split_whitespace().collect();
         if parts.is_empty() {
@@ -1101,6 +1595,7 @@ impl App {
             || self.active_filters.due_before.is_some()
             || self.active_filters.due_after.is_some()
             || self.active_filters.q.is_some()
+            || self.active_filters.tag_ids.is_some()
             || self.active_filters.order_by.is_some()
     }
 

@@ -109,14 +109,14 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 - [x] Search panel (/ command)
 - [x] Real-time search results
 - [x] Navigate and select results
-- [ ] Highlight matches
+- [x] Highlight matches
 
 ### 3.3 Filtering & Ordering
-- [ ] Filter by: status, priority, assignee, due date, tags
-- [ ] Order by: title, due_date, priority, created_at, position
-- [ ] Filter bar in kanban view
-- [ ] Command mode filters (`:filter priority=high`)
-- [ ] Save filter presets
+- [x] Filter by: status, priority, assignee, due date, tags
+- [x] Order by: title, due_date, priority, created_at, position
+- [x] Filter bar in kanban view
+- [x] Command mode filters (`:filter priority=high`)
+- [x] Save filter presets
 
 ---
 

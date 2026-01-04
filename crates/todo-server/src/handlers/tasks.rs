@@ -122,7 +122,7 @@ pub struct TaskListQuery {
     pub order: Option<String>,
     pub page: Option<u32>,
     pub limit: Option<u32>,
-    pub tag_ids: Option<Vec<Uuid>>,
+    pub tag_ids: Option<String>,  // comma-separated UUIDs
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -146,6 +146,15 @@ pub async fn list_tasks(
     let page = params.page.unwrap_or(1).max(1);
     let limit = params.limit.unwrap_or(50).min(100);
     let offset = (page - 1) * limit;
+
+    // Parse comma-separated tag_ids
+    let parsed_tag_ids: Option<Vec<Uuid>> = params.tag_ids.as_ref().and_then(|s| {
+        let ids: Vec<Uuid> = s
+            .split(',')
+            .filter_map(|id| Uuid::parse_str(id.trim()).ok())
+            .collect();
+        if ids.is_empty() { None } else { Some(ids) }
+    });
 
     // Build dynamic query
     let mut conditions = vec!["workspace_id = $1".to_string()];
@@ -179,7 +188,7 @@ pub async fn list_tasks(
         ));
         param_idx += 2;
     }
-    if params.tag_ids.is_some() {
+    if parsed_tag_ids.is_some() {
         conditions.push(format!(
             "EXISTS (SELECT 1 FROM task_tags WHERE task_id = tasks.id AND tag_id = ANY(${}))",
             param_idx
@@ -227,7 +236,7 @@ pub async fn list_tasks(
         let pattern = format!("%{}%", q);
         count_builder = count_builder.bind(pattern.clone()).bind(pattern);
     }
-    if let Some(ref tag_ids) = params.tag_ids {
+    if let Some(ref tag_ids) = parsed_tag_ids {
         count_builder = count_builder.bind(tag_ids);
     }
 
@@ -268,7 +277,7 @@ pub async fn list_tasks(
         let pattern = format!("%{}%", q);
         select_builder = select_builder.bind(pattern.clone()).bind(pattern);
     }
-    if let Some(ref tag_ids) = params.tag_ids {
+    if let Some(ref tag_ids) = parsed_tag_ids {
         select_builder = select_builder.bind(tag_ids);
     }
 

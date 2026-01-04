@@ -116,10 +116,9 @@ See [docs/roadmap.md](docs/roadmap.md) for the full development roadmap.
 **Completed:**
 - Phase 1: Foundation (auth, database, basic TUI)
 - Phase 2: Core Task Management (CRUD, kanban, comments)
-- Phase 3.1-3.2: Search (FTS, fuzzy, search UI)
+- Phase 3: Search (FTS, fuzzy, search UI), Filtering, Ordering
 
 **In Progress:**
-- Phase 3.3: Filtering & Ordering
 - Phase 4: Member invitations
 
 ## License

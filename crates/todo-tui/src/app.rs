@@ -1123,23 +1123,12 @@ impl App {
             self.edit_task_time_estimate_str.parse::<i32>().ok()
         };
 
-        let req = UpdateTaskRequest {
-            title: Some(self.edit_task_title.clone()),
-            status_id: None,
-            description: Some(if self.edit_task_description.is_empty() {
-                None
-            } else {
-                Some(self.edit_task_description.clone())
-            }).flatten(),
-            priority: self.edit_task_priority,
-            due_date,
-            time_estimate_minutes,
-            assigned_to: None,
-        };
-
         self.set_loading(true, "Updating task...");
 
-        match self.api.update_task(workspace_id, task_id, req).await {
+        // Try to update, refresh token if unauthorized
+        let result = self.update_task_with_retry(workspace_id, task_id, due_date, time_estimate_minutes).await;
+
+        match result {
             Ok(updated_task) => {
                 // Update the task detail
                 self.selected_task_detail = Some(updated_task.clone());
@@ -1162,5 +1151,42 @@ impl App {
         }
 
         self.set_loading(false, "");
+    }
+
+    async fn update_task_with_retry(
+        &mut self,
+        workspace_id: uuid::Uuid,
+        task_id: uuid::Uuid,
+        due_date: Option<NaiveDate>,
+        time_estimate_minutes: Option<i32>,
+    ) -> Result<Task, crate::api::ApiError> {
+        let req = UpdateTaskRequest {
+            title: Some(self.edit_task_title.clone()),
+            status_id: None,
+            description: if self.edit_task_description.is_empty() {
+                None
+            } else {
+                Some(self.edit_task_description.clone())
+            },
+            priority: self.edit_task_priority,
+            due_date,
+            time_estimate_minutes,
+            assigned_to: None,
+        };
+
+        // First attempt
+        match self.api.update_task(workspace_id, task_id, req.clone()).await {
+            Ok(task) => Ok(task),
+            Err(crate::api::ApiError::Unauthorized) => {
+                // Try to refresh token
+                if self.api.refresh().await.is_ok() {
+                    // Retry with new token
+                    self.api.update_task(workspace_id, task_id, req).await
+                } else {
+                    Err(crate::api::ApiError::Unauthorized)
+                }
+            }
+            Err(e) => Err(e),
+        }
     }
 }

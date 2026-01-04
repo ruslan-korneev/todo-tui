@@ -20,7 +20,7 @@ pub struct CreateTaskRequest {
     pub assigned_to: Option<Uuid>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateTaskRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,

@@ -45,7 +45,7 @@ pub struct MoveTaskRequest {
     pub position: Option<i32>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TaskListParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_id: Option<Uuid>,
@@ -67,6 +67,8 @@ pub struct TaskListParams {
     pub page: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -77,4 +79,24 @@ pub struct CreateCommentRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateCommentRequest {
     pub content: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateTagRequest {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpdateTagRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetTaskTagsRequest {
+    pub tag_ids: Vec<Uuid>,
 }

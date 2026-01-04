@@ -2,12 +2,13 @@ use anyhow::Result;
 use reqwest::{Client, StatusCode};
 use todo_shared::{
     api::{
-        AuthResponse, CreateCommentRequest, CreateStatusRequest, CreateTaskRequest,
-        CreateWorkspaceRequest, LoginRequest, MoveTaskRequest, RefreshRequest, RegisterRequest,
-        SearchResponse, UpdateCommentRequest, UpdateStatusRequest, UpdateTaskRequest,
-        UpdateWorkspaceRequest, WorkspaceMemberWithUser,
+        AuthResponse, CreateCommentRequest, CreateStatusRequest, CreateTagRequest,
+        CreateTaskRequest, CreateWorkspaceRequest, LoginRequest, MoveTaskRequest, RefreshRequest,
+        RegisterRequest, SearchResponse, SetTaskTagsRequest, TaskListParams, UpdateCommentRequest,
+        UpdateStatusRequest, UpdateTagRequest, UpdateTaskRequest, UpdateWorkspaceRequest,
+        WorkspaceMemberWithUser,
     },
-    Comment, Task, TaskStatus, User, Workspace, WorkspaceSettings, WorkspaceWithRole,
+    Comment, Tag, Task, TaskStatus, User, Workspace, WorkspaceSettings, WorkspaceWithRole,
 };
 use uuid::Uuid;
 
@@ -482,13 +483,51 @@ impl ApiClient {
     pub async fn list_tasks(
         &self,
         workspace_id: Uuid,
-        status_id: Option<Uuid>,
+        params: Option<&TaskListParams>,
     ) -> Result<TaskListResponse, ApiError> {
         let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
 
         let mut url = self.url(&format!("/workspaces/{}/tasks", workspace_id));
-        if let Some(status_id) = status_id {
-            url.push_str(&format!("?status_id={}", status_id));
+
+        // Build query string from TaskListParams
+        if let Some(params) = params {
+            let mut query_parts = Vec::new();
+
+            if let Some(status_id) = &params.status_id {
+                query_parts.push(format!("status_id={}", status_id));
+            }
+            if let Some(priority) = &params.priority {
+                query_parts.push(format!("priority={}", serde_json::to_string(priority).unwrap_or_default().trim_matches('"')));
+            }
+            if let Some(assigned_to) = &params.assigned_to {
+                query_parts.push(format!("assigned_to={}", assigned_to));
+            }
+            if let Some(due_before) = &params.due_before {
+                query_parts.push(format!("due_before={}", due_before));
+            }
+            if let Some(due_after) = &params.due_after {
+                query_parts.push(format!("due_after={}", due_after));
+            }
+            if let Some(q) = &params.q {
+                query_parts.push(format!("q={}", urlencoding::encode(q)));
+            }
+            if let Some(order_by) = &params.order_by {
+                query_parts.push(format!("order_by={}", order_by));
+            }
+            if let Some(order) = &params.order {
+                query_parts.push(format!("order={}", order));
+            }
+            if let Some(page) = &params.page {
+                query_parts.push(format!("page={}", page));
+            }
+            if let Some(limit) = &params.limit {
+                query_parts.push(format!("limit={}", limit));
+            }
+
+            if !query_parts.is_empty() {
+                url.push_str("?");
+                url.push_str(&query_parts.join("&"));
+            }
         }
 
         let response = self
@@ -730,5 +769,126 @@ impl ApiClient {
             .await?;
 
         self.handle_empty_response(response).await
+    }
+
+    // ============ Tags ============
+
+    pub async fn list_tags(&self, workspace_id: Uuid) -> Result<Vec<Tag>, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let response = self
+            .client
+            .get(&self.url(&format!("/workspaces/{}/tags", workspace_id)))
+            .header("Authorization", &auth)
+            .send()
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    pub async fn create_tag(
+        &self,
+        workspace_id: Uuid,
+        name: &str,
+        color: Option<&str>,
+    ) -> Result<Tag, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let req = CreateTagRequest {
+            name: name.to_string(),
+            color: color.map(|c| c.to_string()),
+        };
+
+        let response = self
+            .client
+            .post(&self.url(&format!("/workspaces/{}/tags", workspace_id)))
+            .header("Authorization", &auth)
+            .json(&req)
+            .send()
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    pub async fn update_tag(
+        &self,
+        workspace_id: Uuid,
+        tag_id: Uuid,
+        name: Option<&str>,
+        color: Option<&str>,
+    ) -> Result<Tag, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let req = UpdateTagRequest {
+            name: name.map(|n| n.to_string()),
+            color: color.map(|c| c.to_string()),
+        };
+
+        let response = self
+            .client
+            .patch(&self.url(&format!("/workspaces/{}/tags/{}", workspace_id, tag_id)))
+            .header("Authorization", &auth)
+            .json(&req)
+            .send()
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    pub async fn delete_tag(&self, workspace_id: Uuid, tag_id: Uuid) -> Result<(), ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let response = self
+            .client
+            .delete(&self.url(&format!("/workspaces/{}/tags/{}", workspace_id, tag_id)))
+            .header("Authorization", &auth)
+            .send()
+            .await?;
+
+        self.handle_empty_response(response).await
+    }
+
+    pub async fn set_task_tags(
+        &self,
+        workspace_id: Uuid,
+        task_id: Uuid,
+        tag_ids: Vec<Uuid>,
+    ) -> Result<Vec<Tag>, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let req = SetTaskTagsRequest { tag_ids };
+
+        let response = self
+            .client
+            .put(&self.url(&format!(
+                "/workspaces/{}/tasks/{}/tags",
+                workspace_id, task_id
+            )))
+            .header("Authorization", &auth)
+            .json(&req)
+            .send()
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    pub async fn get_task_tags(
+        &self,
+        workspace_id: Uuid,
+        task_id: Uuid,
+    ) -> Result<Vec<Tag>, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let response = self
+            .client
+            .get(&self.url(&format!(
+                "/workspaces/{}/tasks/{}/tags",
+                workspace_id, task_id
+            )))
+            .header("Authorization", &auth)
+            .send()
+            .await?;
+
+        self.handle_response(response).await
     }
 }

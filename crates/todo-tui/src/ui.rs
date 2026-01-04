@@ -10,6 +10,20 @@ use crate::app::{App, AuthMode, InputField, NewTaskField, TaskEditField, View, V
 use todo_shared::api::SearchResultItem;
 use todo_shared::Priority;
 
+/// Parse a hex color string like "#ff0000" to a ratatui Color
+fn parse_hex_color(hex: &str) -> Option<Color> {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() != 6 {
+        return None;
+    }
+
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+
+    Some(Color::Rgb(r, g, b))
+}
+
 /// Returns (symbol, color) for a task's priority indicator
 fn priority_indicator(priority: Option<Priority>) -> (&'static str, Color) {
     match priority {
@@ -313,18 +327,32 @@ fn draw_create_workspace_popup(f: &mut Frame, app: &App) {
 }
 
 fn draw_dashboard(f: &mut Frame, app: &App) {
+    let filter_bar_height = if app.filter_bar_visible { 2 } else { 0 };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Main content
-            Constraint::Length(1), // Status bar
+            Constraint::Length(3),                      // Header
+            Constraint::Length(filter_bar_height),      // Filter bar (optional)
+            Constraint::Min(0),                         // Main content
+            Constraint::Length(1),                      // Status bar
         ])
         .split(f.area());
 
     draw_header(f, chunks[0], app);
-    draw_kanban(f, chunks[1], app);
-    draw_status_bar(f, chunks[2], app);
+
+    if app.filter_bar_visible {
+        draw_filter_bar(f, chunks[1], app);
+    }
+
+    draw_kanban(f, chunks[2], app);
+
+    // Draw command input at the bottom if in command mode
+    if app.command_mode {
+        draw_command_input(f, chunks[3], app);
+    } else {
+        draw_status_bar(f, chunks[3], app);
+    }
 
     // Draw create task popup if active
     if app.creating_task {
@@ -339,6 +367,11 @@ fn draw_dashboard(f: &mut Frame, app: &App) {
     // Draw search popup if active
     if app.searching {
         draw_search_popup(f, app);
+    }
+
+    // Draw tag management popup if active
+    if app.tag_management_visible {
+        draw_tag_management_popup(f, app);
     }
 }
 
@@ -360,6 +393,96 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     .block(Block::default().borders(Borders::BOTTOM));
 
     f.render_widget(header, area);
+}
+
+fn draw_filter_bar(f: &mut Frame, area: Rect, app: &App) {
+    let mut spans: Vec<Span> = vec![Span::styled(
+        " Filters: ",
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+    )];
+
+    let filter_style = Style::default()
+        .bg(Color::DarkGray)
+        .fg(Color::White);
+
+    // Priority filter
+    if let Some(priority) = &app.active_filters.priority {
+        let priority_str = match priority {
+            Priority::Highest => "Highest",
+            Priority::High => "High",
+            Priority::Medium => "Medium",
+            Priority::Low => "Low",
+            Priority::Lowest => "Lowest",
+        };
+        spans.push(Span::styled(format!(" Priority: {} ", priority_str), filter_style));
+        spans.push(Span::raw(" "));
+    }
+
+    // Assignee filter
+    if let Some(assignee_id) = &app.active_filters.assigned_to {
+        let assignee_name = app
+            .workspace_members
+            .iter()
+            .find(|m| &m.user_id == assignee_id)
+            .map(|m| m.display_name.as_str())
+            .unwrap_or("Unknown");
+        spans.push(Span::styled(format!(" Assignee: {} ", assignee_name), filter_style));
+        spans.push(Span::raw(" "));
+    }
+
+    // Due date filters
+    if let Some(date) = &app.active_filters.due_before {
+        spans.push(Span::styled(format!(" Due before: {} ", date), filter_style));
+        spans.push(Span::raw(" "));
+    }
+
+    if let Some(date) = &app.active_filters.due_after {
+        spans.push(Span::styled(format!(" Due after: {} ", date), filter_style));
+        spans.push(Span::raw(" "));
+    }
+
+    // Sort indicator
+    if let Some(order_by) = &app.active_filters.order_by {
+        let direction = app
+            .active_filters
+            .order
+            .as_ref()
+            .map(|o| if o == "DESC" { " ↓" } else { " ↑" })
+            .unwrap_or("");
+        spans.push(Span::styled(
+            format!(" Sort: {}{} ", order_by, direction),
+            Style::default().bg(Color::Blue).fg(Color::White),
+        ));
+    }
+
+    // Show hint if no filters active but bar is visible
+    if spans.len() == 1 {
+        spans.push(Span::styled(
+            "None (press 'f' to hide, ':clear' to reset)",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    let filter_bar = Paragraph::new(Line::from(spans))
+        .style(Style::default().bg(Color::Black));
+
+    f.render_widget(filter_bar, area);
+}
+
+fn draw_command_input(f: &mut Frame, area: Rect, app: &App) {
+    let command_line = Paragraph::new(Line::from(vec![
+        Span::styled(":", Style::default().fg(Color::Yellow)),
+        Span::raw(&app.command_input),
+    ]))
+    .style(Style::default().bg(Color::Black));
+
+    f.render_widget(command_line, area);
+
+    // Set cursor position
+    f.set_cursor_position((
+        area.x + 1 + app.command_input.len() as u16,
+        area.y,
+    ));
 }
 
 fn draw_kanban(f: &mut Frame, area: Rect, app: &App) {
@@ -387,69 +510,18 @@ fn draw_kanban(f: &mut Frame, area: Rect, app: &App) {
 
     for (i, column) in app.columns.iter().enumerate() {
         let is_selected = i == app.selected_column;
-        let border_style = if is_selected {
+        let column_border_style = if is_selected {
             Style::default().fg(Color::Cyan)
         } else {
             Style::default().fg(Color::DarkGray)
         };
 
-        // Calculate visible height (subtract 2 for borders)
-        let visible_height = column_chunks[i].height.saturating_sub(2) as usize;
         let scroll_offset = app.column_scroll_offsets.get(i).copied().unwrap_or(0);
 
-        // Build multi-line task cards with scrolling
-        let mut task_lines: Vec<Line> = Vec::new();
-        let mut lines_used = 0;
-
-        for (j, task) in column.tasks.iter().enumerate().skip(scroll_offset) {
-            // Calculate lines this task will use
-            let task_height = if task.due_date.is_some() { 2 } else { 1 };
-
-            // Stop if we'd exceed visible area
-            if lines_used + task_height > visible_height {
-                break;
-            }
-
-            let is_task_selected = is_selected && j == app.selected_task;
-            let bg_style = if is_task_selected {
-                Style::default().bg(Color::DarkGray)
-            } else {
-                Style::default()
-            };
-
-            // Line 1: Priority indicator + title
-            let (priority_symbol, priority_color) = priority_indicator(task.priority);
-            task_lines.push(Line::from(vec![
-                Span::styled(" ", bg_style),
-                Span::styled(priority_symbol, bg_style.fg(priority_color)),
-                Span::styled(" ", bg_style),
-                Span::styled(&task.title, bg_style.fg(Color::White)),
-            ]));
-            lines_used += 1;
-
-            // Line 2: Due date (if set)
-            if let Some(due_date) = task.due_date {
-                if lines_used < visible_height {
-                    let date_str = due_date.format("%b %d").to_string();
-                    task_lines.push(Line::from(vec![
-                        Span::styled("   ", bg_style),
-                        Span::styled("📅 ", bg_style.fg(Color::DarkGray)),
-                        Span::styled(date_str, bg_style.fg(Color::DarkGray)),
-                    ]));
-                    lines_used += 1;
-                }
-            }
-
-            // Empty line between cards (separator)
-            if j < column.tasks.len() - 1 && lines_used < visible_height {
-                task_lines.push(Line::from(""));
-                lines_used += 1;
-            }
-        }
-
-        // Show scroll indicator if there are more tasks
+        // Calculate scroll indicators
         let has_more_above = scroll_offset > 0;
-        let has_more_below = scroll_offset + lines_used / 2 < column.tasks.len().saturating_sub(1);
+        let visible_tasks_estimate = (column_chunks[i].height.saturating_sub(2) / 4) as usize;
+        let has_more_below = scroll_offset + visible_tasks_estimate < column.tasks.len();
         let scroll_indicator = if has_more_above && has_more_below {
             " ↑↓"
         } else if has_more_above {
@@ -460,14 +532,112 @@ fn draw_kanban(f: &mut Frame, area: Rect, app: &App) {
             ""
         };
 
-        let column_widget = Paragraph::new(task_lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style)
-                .title(format!(" {} ({}){} ", column.status.name, column.tasks.len(), scroll_indicator)),
-        );
+        // Render column block first
+        let column_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(column_border_style)
+            .title(format!(
+                " {} ({}){}",
+                column.status.name,
+                column.tasks.len(),
+                scroll_indicator
+            ));
+        let inner_area = column_block.inner(column_chunks[i]);
+        f.render_widget(column_block, column_chunks[i]);
 
-        f.render_widget(column_widget, column_chunks[i]);
+        // Render each task card with its own border
+        let mut y_offset: u16 = 0;
+        for (j, task) in column.tasks.iter().enumerate().skip(scroll_offset) {
+            // Calculate task card height: 1 line for title, +1 if due date, +1 if tags, +2 for borders
+            let content_lines = 1
+                + if task.due_date.is_some() { 1 } else { 0 }
+                + if !task.tags.is_empty() { 1 } else { 0 };
+            let card_height = (content_lines + 2) as u16; // +2 for top/bottom borders
+
+            // Stop if we'd exceed visible area
+            if y_offset + card_height > inner_area.height {
+                break;
+            }
+
+            let is_task_selected = is_selected && j == app.selected_task;
+            let task_border_style = if is_task_selected {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+
+            // Calculate task card area
+            let task_area = Rect {
+                x: inner_area.x,
+                y: inner_area.y + y_offset,
+                width: inner_area.width,
+                height: card_height,
+            };
+
+            // Build task content lines
+            let mut task_content: Vec<Line> = Vec::new();
+
+            // Line 1: Priority indicator + title
+            let (priority_symbol, priority_color) = priority_indicator(task.priority);
+            task_content.push(Line::from(vec![
+                Span::styled(priority_symbol, Style::default().fg(priority_color)),
+                Span::styled(" ", Style::default()),
+                Span::styled(&task.title, Style::default().fg(Color::White)),
+            ]));
+
+            // Line 2: Due date (if set)
+            if let Some(due_date) = task.due_date {
+                let date_str = due_date.format("%b %d").to_string();
+                task_content.push(Line::from(vec![
+                    Span::styled("📅 ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(date_str, Style::default().fg(Color::DarkGray)),
+                ]));
+            }
+
+            // Line 3: Tags (if any)
+            if !task.tags.is_empty() {
+                let mut tag_spans: Vec<Span> = Vec::new();
+
+                // Show up to 2 tags, then "+N" for more
+                let display_tags = task.tags.iter().take(2);
+                let remaining = task.tags.len().saturating_sub(2);
+
+                for (idx, tag) in display_tags.enumerate() {
+                    if idx > 0 {
+                        tag_spans.push(Span::styled(" ", Style::default()));
+                    }
+                    // Parse tag color or use default
+                    let tag_color = tag
+                        .color
+                        .as_ref()
+                        .and_then(|c| parse_hex_color(c))
+                        .unwrap_or(Color::Gray);
+                    tag_spans.push(Span::styled(
+                        format!(" {} ", tag.name),
+                        Style::default().bg(tag_color).fg(Color::Black),
+                    ));
+                }
+
+                if remaining > 0 {
+                    tag_spans.push(Span::styled(
+                        format!(" +{}", remaining),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+
+                task_content.push(Line::from(tag_spans));
+            }
+
+            // Render task card with border
+            let task_block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(task_border_style);
+
+            let task_widget = Paragraph::new(task_content).block(task_block);
+            f.render_widget(task_widget, task_area);
+
+            y_offset += card_height;
+        }
     }
 }
 
@@ -679,25 +849,29 @@ fn draw_search_popup(f: &mut Frame, app: &App) {
 
             match result {
                 SearchResultItem::Task(task_result) => {
-                    // Use title with optional highlight markers
-                    let title_text = task_result
-                        .title_highlights
-                        .as_ref()
-                        .map(|h| format_highlights(h))
-                        .unwrap_or_else(|| task_result.task.title.clone());
-
                     let (priority_symbol, priority_color) = priority_indicator(task_result.task.priority);
 
-                    ListItem::new(Line::from(vec![
+                    // Build the line with highlighted title
+                    let mut spans = vec![
                         Span::styled("  ", style),
                         Span::styled(priority_symbol, style.fg(priority_color)),
                         Span::styled(" ", style),
-                        Span::styled(title_text, style),
-                        Span::styled(
-                            format!(" ({:.2})", task_result.rank),
-                            style.fg(Color::DarkGray),
-                        ),
-                    ]))
+                    ];
+
+                    // Parse title with highlight markers
+                    let title_text = task_result
+                        .title_highlights
+                        .as_deref()
+                        .unwrap_or(&task_result.task.title);
+                    spans.extend(parse_highlights_to_spans(title_text, style));
+
+                    // Add rank score
+                    spans.push(Span::styled(
+                        format!(" ({:.2})", task_result.rank),
+                        style.fg(Color::DarkGray),
+                    ));
+
+                    ListItem::new(Line::from(spans))
                 }
             }
         })
@@ -736,9 +910,199 @@ fn draw_search_popup(f: &mut Frame, app: &App) {
     ));
 }
 
-/// Convert highlight markers (<< >>) to plain text (simplified version)
-fn format_highlights(text: &str) -> String {
-    text.replace("<<", "").replace(">>", "")
+fn draw_tag_management_popup(f: &mut Frame, app: &App) {
+    use crate::app::{TagManagementMode, TAG_COLORS};
+
+    let area = centered_rect(50, 60, f.area());
+    f.render_widget(Clear, area);
+
+    let title = match app.tag_management_mode {
+        TagManagementMode::List => " Manage Tags ",
+        TagManagementMode::Create => " Create Tag ",
+        TagManagementMode::Edit => " Edit Tag ",
+    };
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    match app.tag_management_mode {
+        TagManagementMode::List => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .margin(1)
+                .constraints([
+                    Constraint::Min(0),    // Tag list
+                    Constraint::Length(2), // Hints
+                ])
+                .split(inner);
+
+            // Tag list
+            let tag_items: Vec<ListItem> = app
+                .workspace_tags
+                .iter()
+                .enumerate()
+                .map(|(i, tag)| {
+                    let is_selected = i == app.tag_management_cursor;
+                    let style = if is_selected {
+                        Style::default().bg(Color::DarkGray).fg(Color::White)
+                    } else {
+                        Style::default()
+                    };
+
+                    let tag_color = tag.color.as_ref()
+                        .and_then(|c| parse_hex_color(c))
+                        .unwrap_or(Color::Gray);
+
+                    ListItem::new(Line::from(vec![
+                        Span::styled("  ", style),
+                        Span::styled(
+                            format!(" {} ", tag.name),
+                            Style::default().bg(tag_color).fg(Color::Black),
+                        ),
+                        Span::styled(
+                            format!("  {}", tag.color.as_deref().unwrap_or("")),
+                            style.fg(Color::DarkGray),
+                        ),
+                    ]))
+                })
+                .collect();
+
+            let list_title = if app.workspace_tags.is_empty() {
+                " No tags - press 'n' to create ".to_string()
+            } else {
+                format!(" Tags ({}) ", app.workspace_tags.len())
+            };
+
+            let list = List::new(tag_items).block(
+                Block::default()
+                    .title(list_title)
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Gray)),
+            );
+            f.render_widget(list, chunks[0]);
+
+            // Hints
+            let hint = Paragraph::new(Line::from(vec![
+                Span::styled("n", Style::default().fg(Color::Yellow)),
+                Span::raw(": new | "),
+                Span::styled("e", Style::default().fg(Color::Yellow)),
+                Span::raw(": edit | "),
+                Span::styled("d", Style::default().fg(Color::Yellow)),
+                Span::raw(": delete | "),
+                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                Span::raw(": close"),
+            ]))
+            .alignment(Alignment::Center);
+            f.render_widget(hint, chunks[1]);
+        }
+        TagManagementMode::Create | TagManagementMode::Edit => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .margin(1)
+                .constraints([
+                    Constraint::Length(3), // Name input
+                    Constraint::Length(3), // Color selector
+                    Constraint::Min(0),    // Spacer
+                    Constraint::Length(2), // Hints
+                ])
+                .split(inner);
+
+            // Name input
+            let name_block = Block::default()
+                .title(" Name ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow));
+            let name_input = Paragraph::new(app.tag_create_name.as_str()).block(name_block);
+            f.render_widget(name_input, chunks[0]);
+
+            // Color selector
+            let selected_color = TAG_COLORS.get(app.tag_create_color_idx).unwrap_or(&"#6B7280");
+            let color_preview = parse_hex_color(selected_color).unwrap_or(Color::Gray);
+
+            let color_block = Block::default()
+                .title(" Color (Tab to change) ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Gray));
+            let color_display = Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "  ██  ",
+                    Style::default().fg(color_preview),
+                ),
+                Span::raw(format!(" {} ", selected_color)),
+            ]))
+            .block(color_block);
+            f.render_widget(color_display, chunks[1]);
+
+            // Hints
+            let hint = Paragraph::new(Line::from(vec![
+                Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                Span::raw(": save | "),
+                Span::styled("Tab", Style::default().fg(Color::Yellow)),
+                Span::raw(": change color | "),
+                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                Span::raw(": cancel"),
+            ]))
+            .alignment(Alignment::Center);
+            f.render_widget(hint, chunks[3]);
+
+            // Set cursor position
+            f.set_cursor_position((
+                chunks[0].x + 1 + app.tag_create_name.len() as u16,
+                chunks[0].y + 1,
+            ));
+        }
+    }
+}
+
+/// Parse highlight markers (<< >>) into styled spans
+fn parse_highlights_to_spans<'a>(text: &'a str, base_style: Style) -> Vec<Span<'a>> {
+    let highlight_style = base_style.fg(Color::Yellow).add_modifier(Modifier::BOLD);
+
+    let mut spans = Vec::new();
+    let mut remaining = text;
+
+    while let Some(start_pos) = remaining.find("<<") {
+        // Add text before the marker
+        if start_pos > 0 {
+            spans.push(Span::styled(
+                remaining[..start_pos].to_string(),
+                base_style,
+            ));
+        }
+
+        // Find end marker
+        let after_start = &remaining[start_pos + 2..];
+        if let Some(end_pos) = after_start.find(">>") {
+            // Add highlighted text
+            spans.push(Span::styled(
+                after_start[..end_pos].to_string(),
+                highlight_style,
+            ));
+            remaining = &after_start[end_pos + 2..];
+        } else {
+            // No end marker found, add rest as plain text
+            spans.push(Span::styled(remaining[start_pos..].to_string(), base_style));
+            remaining = "";
+            break;
+        }
+    }
+
+    // Add any remaining text
+    if !remaining.is_empty() {
+        spans.push(Span::styled(remaining.to_string(), base_style));
+    }
+
+    // Return at least one span if empty
+    if spans.is_empty() {
+        spans.push(Span::styled(text.to_string(), base_style));
+    }
+
+    spans
 }
 
 fn draw_task_detail(f: &mut Frame, app: &App) {
@@ -929,7 +1293,7 @@ fn draw_task_edit_mode(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Length(3), // Due Date
             Constraint::Length(3), // Time Estimate
             Constraint::Length(3), // Assignee
-            Constraint::Min(0),    // Spacer
+            Constraint::Min(5),    // Tags
         ])
         .split(inner);
 
@@ -1013,8 +1377,49 @@ fn draw_task_edit_mode(f: &mut Frame, area: Rect, app: &App) {
     let assignee_text = Paragraph::new(assignee_str).block(assignee_block);
     f.render_widget(assignee_text, chunks[5]);
 
-    // Set cursor position if in insert mode
-    if app.vim_mode == VimMode::Insert {
+    // Render Tags field
+    let tag_block = Block::default()
+        .title(" Tags (h/l: navigate, Space: toggle) ")
+        .borders(Borders::ALL)
+        .border_style(field_style(TaskEditField::Tags));
+
+    // Build tag list display
+    let tag_lines: Vec<Line> = app.workspace_tags
+        .iter()
+        .enumerate()
+        .map(|(idx, tag)| {
+            let is_selected = app.task_edit_selected_tags.contains(&tag.id);
+            let is_cursor = app.edit_field == TaskEditField::Tags && idx == app.tag_selector_cursor;
+            let checkbox = if is_selected { "[x]" } else { "[ ]" };
+            let tag_color = tag.color.as_ref()
+                .and_then(|c| parse_hex_color(c))
+                .unwrap_or(Color::Gray);
+
+            let style = if is_cursor {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else {
+                Style::default()
+            };
+
+            Line::from(vec![
+                Span::styled(format!(" {} ", checkbox), style),
+                Span::styled(
+                    format!(" {} ", tag.name),
+                    Style::default().bg(tag_color).fg(Color::Black),
+                ),
+            ])
+        })
+        .collect();
+
+    let tags_widget = if tag_lines.is_empty() {
+        Paragraph::new("No tags. Press T in kanban to manage tags.").block(tag_block)
+    } else {
+        Paragraph::new(tag_lines).block(tag_block)
+    };
+    f.render_widget(tags_widget, chunks[6]);
+
+    // Set cursor position if in insert mode (not for Tags field)
+    if app.vim_mode == VimMode::Insert && app.edit_field != TaskEditField::Tags {
         let (cursor_x, cursor_y) = match app.edit_field {
             TaskEditField::Title => (
                 chunks[0].x + 1 + app.edit_task_title.len() as u16,
@@ -1034,6 +1439,7 @@ fn draw_task_edit_mode(f: &mut Frame, area: Rect, app: &App) {
                 chunks[4].y + 1,
             ),
             TaskEditField::Assignee => (chunks[5].x + 1, chunks[5].y + 1),
+            TaskEditField::Tags => (chunks[6].x + 1, chunks[6].y + 1), // Not actually used
         };
         f.set_cursor_position((cursor_x, cursor_y));
     }

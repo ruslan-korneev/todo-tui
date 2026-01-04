@@ -6,7 +6,7 @@ use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
 use todo_shared::{
     api::{CreateTaskRequest, MoveTaskRequest, UpdateTaskRequest},
-    Priority, Task, WorkspaceRole,
+    Priority, Tag, Task, WorkspaceRole,
 };
 use uuid::Uuid;
 
@@ -106,6 +106,7 @@ fn row_to_task(row: TaskRow) -> Task {
         created_at: row.11,
         updated_at: row.12,
         completed_at: row.13,
+        tags: Vec::new(), // Tags will be populated separately
     }
 }
 
@@ -121,6 +122,7 @@ pub struct TaskListQuery {
     pub order: Option<String>,
     pub page: Option<u32>,
     pub limit: Option<u32>,
+    pub tag_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -177,6 +179,14 @@ pub async fn list_tasks(
         ));
         param_idx += 2;
     }
+    if params.tag_ids.is_some() {
+        conditions.push(format!(
+            "EXISTS (SELECT 1 FROM task_tags WHERE task_id = tasks.id AND tag_id = ANY(${}))",
+            param_idx
+        ));
+        param_idx += 1;
+    }
+    let _ = param_idx; // Suppress unused warning
 
     let where_clause = conditions.join(" AND ");
 
@@ -217,6 +227,9 @@ pub async fn list_tasks(
         let pattern = format!("%{}%", q);
         count_builder = count_builder.bind(pattern.clone()).bind(pattern);
     }
+    if let Some(ref tag_ids) = params.tag_ids {
+        count_builder = count_builder.bind(tag_ids);
+    }
 
     let (total,): (i64,) = count_builder.fetch_one(&state.db).await?;
 
@@ -255,11 +268,48 @@ pub async fn list_tasks(
         let pattern = format!("%{}%", q);
         select_builder = select_builder.bind(pattern.clone()).bind(pattern);
     }
+    if let Some(ref tag_ids) = params.tag_ids {
+        select_builder = select_builder.bind(tag_ids);
+    }
 
     select_builder = select_builder.bind(limit as i64).bind(offset as i64);
 
     let rows = select_builder.fetch_all(&state.db).await?;
-    let tasks = rows.into_iter().map(row_to_task).collect();
+    let mut tasks: Vec<Task> = rows.into_iter().map(row_to_task).collect();
+
+    // Fetch tags for all tasks in bulk
+    if !tasks.is_empty() {
+        let task_ids: Vec<Uuid> = tasks.iter().map(|t| t.id).collect();
+        let tags: Vec<(Uuid, Uuid, Uuid, String, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT tt.task_id, t.id, t.workspace_id, t.name, t.color
+            FROM tags t
+            INNER JOIN task_tags tt ON t.id = tt.tag_id
+            WHERE tt.task_id = ANY($1)
+            ORDER BY t.name
+            "#,
+        )
+        .bind(&task_ids)
+        .fetch_all(&state.db)
+        .await?;
+
+        // Group tags by task_id
+        let mut tags_by_task: std::collections::HashMap<Uuid, Vec<Tag>> =
+            std::collections::HashMap::new();
+        for (task_id, id, workspace_id, name, color) in tags {
+            tags_by_task
+                .entry(task_id)
+                .or_default()
+                .push(Tag { id, workspace_id, name, color });
+        }
+
+        // Assign tags to tasks
+        for task in &mut tasks {
+            if let Some(task_tags) = tags_by_task.remove(&task.id) {
+                task.tags = task_tags;
+            }
+        }
+    }
 
     Ok(Json(TaskListResponse {
         tasks,
@@ -341,6 +391,7 @@ pub async fn create_task(
         created_at: now,
         updated_at: now,
         completed_at: None,
+        tags: Vec::new(),
     }))
 }
 
@@ -367,7 +418,28 @@ pub async fn get_task(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    Ok(Json(row_to_task(row)))
+    let mut task = row_to_task(row);
+
+    // Fetch tags for the task
+    let tags: Vec<(Uuid, Uuid, String, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT t.id, t.workspace_id, t.name, t.color
+        FROM tags t
+        INNER JOIN task_tags tt ON t.id = tt.tag_id
+        WHERE tt.task_id = $1
+        ORDER BY t.name
+        "#,
+    )
+    .bind(task_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    task.tags = tags
+        .into_iter()
+        .map(|(id, workspace_id, name, color)| Tag { id, workspace_id, name, color })
+        .collect();
+
+    Ok(Json(task))
 }
 
 /// PATCH /api/v1/workspaces/:id/tasks/:task_id

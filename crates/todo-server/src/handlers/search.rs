@@ -29,47 +29,81 @@ async fn check_membership(
     role.map(|(r,)| r).ok_or(AppError::NotFound)
 }
 
-// 15 elements (within SQLx tuple limit of 16)
-type SearchTaskRow = (
-    Uuid,                    // id
-    Uuid,                    // workspace_id
-    Uuid,                    // status_id
-    String,                  // title
-    Option<String>,          // description
-    Option<Priority>,        // priority
-    Option<NaiveDate>,       // due_date
-    Option<i32>,             // time_estimate_minutes
-    i32,                     // position
-    Uuid,                    // created_by
-    Option<Uuid>,            // assigned_to
-    DateTime<Utc>,           // created_at
-    DateTime<Utc>,           // updated_at
-    Option<DateTime<Utc>>,   // completed_at
-    f32,                     // rank
-);
+/// Search result row from database with highlight fields
+#[derive(sqlx::FromRow)]
+struct SearchTaskRow {
+    id: Uuid,
+    workspace_id: Uuid,
+    status_id: Uuid,
+    title: String,
+    description: Option<String>,
+    #[sqlx(rename = "priority")]
+    priority: Option<Priority>,
+    due_date: Option<NaiveDate>,
+    time_estimate_minutes: Option<i32>,
+    position: i32,
+    created_by: Uuid,
+    assigned_to: Option<Uuid>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    completed_at: Option<DateTime<Utc>>,
+    rank: f32,
+    title_highlight: Option<String>,
+    desc_highlight: Option<String>,
+}
 
 fn row_to_search_result(row: SearchTaskRow) -> SearchResultItem {
     SearchResultItem::Task(SearchTaskResult {
         task: Task {
-            id: row.0,
-            workspace_id: row.1,
-            status_id: row.2,
-            title: row.3,
-            description: row.4,
-            priority: row.5,
-            due_date: row.6,
-            time_estimate_minutes: row.7,
-            position: row.8,
-            created_by: row.9,
-            assigned_to: row.10,
-            created_at: row.11,
-            updated_at: row.12,
-            completed_at: row.13,
+            id: row.id,
+            workspace_id: row.workspace_id,
+            status_id: row.status_id,
+            title: row.title,
+            description: row.description,
+            priority: row.priority,
+            due_date: row.due_date,
+            time_estimate_minutes: row.time_estimate_minutes,
+            position: row.position,
+            created_by: row.created_by,
+            assigned_to: row.assigned_to,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            completed_at: row.completed_at,
+            tags: Vec::new(),
         },
-        rank: row.14,
-        title_highlights: None,
-        description_highlights: None,
+        rank: row.rank,
+        title_highlights: row.title_highlight,
+        description_highlights: row.desc_highlight,
     })
+}
+
+/// Generate highlight markers for fuzzy search matches
+fn highlight_fuzzy_matches(text: &str, query: &str) -> String {
+    if query.is_empty() || text.is_empty() {
+        return text.to_string();
+    }
+
+    // Case-insensitive search for query substring
+    let text_lower = text.to_lowercase();
+    let query_lower = query.to_lowercase();
+
+    let mut result = String::with_capacity(text.len() + query.len() * 4);
+    let mut last_end = 0;
+
+    // Find all occurrences of the query in the text
+    for (start, _) in text_lower.match_indices(&query_lower) {
+        // Add text before this match
+        result.push_str(&text[last_end..start]);
+        // Add highlighted match (using original case)
+        result.push_str("<<");
+        result.push_str(&text[start..start + query.len()]);
+        result.push_str(">>");
+        last_end = start + query.len();
+    }
+
+    // Add remaining text
+    result.push_str(&text[last_end..]);
+    result
 }
 
 /// GET /api/v1/workspaces/:id/search
@@ -120,7 +154,9 @@ pub async fn search(
                    GREATEST(
                        similarity(t.title, $2),
                        COALESCE(similarity(t.description, $2), 0)
-                   )::real as rank
+                   )::real as rank,
+                   NULL::text as title_highlight,
+                   NULL::text as desc_highlight
             FROM tasks t
             WHERE t.workspace_id = $1
               AND (t.title % $2 OR t.description % $2)
@@ -134,6 +170,19 @@ pub async fn search(
         .bind(offset as i64)
         .fetch_all(&state.db)
         .await?;
+
+        // Apply fuzzy highlighting in Rust (PostgreSQL doesn't have built-in trigram highlighting)
+        let rows: Vec<SearchTaskRow> = rows
+            .into_iter()
+            .map(|mut row| {
+                row.title_highlight = Some(highlight_fuzzy_matches(&row.title, query));
+                row.desc_highlight = row
+                    .description
+                    .as_ref()
+                    .map(|d| highlight_fuzzy_matches(d, query));
+                row
+            })
+            .collect();
 
         (total, rows)
     } else {
@@ -160,7 +209,11 @@ pub async fn search(
                    ts_rank(
                        to_tsvector('english', COALESCE(t.title, '') || ' ' || COALESCE(t.description, '')),
                        plainto_tsquery('english', $2)
-                   )::real as rank
+                   )::real as rank,
+                   ts_headline('english', t.title, plainto_tsquery('english', $2),
+                              'StartSel=<<, StopSel=>>') as title_highlight,
+                   ts_headline('english', COALESCE(t.description, ''), plainto_tsquery('english', $2),
+                              'StartSel=<<, StopSel=>>, MaxWords=30, MinWords=10') as desc_highlight
             FROM tasks t
             WHERE t.workspace_id = $1
               AND to_tsvector('english', COALESCE(t.title, '') || ' ' || COALESCE(t.description, ''))

@@ -1,11 +1,24 @@
 use anyhow::Result;
 use chrono::NaiveDate;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use todo_shared::api::{CreateTaskRequest, SearchResultItem, UpdateTaskRequest, WorkspaceMemberWithUser};
-use todo_shared::{Comment, Priority, Task, TaskStatus, User, Workspace, WorkspaceWithRole};
+use todo_shared::api::{CreateTaskRequest, SearchResultItem, TaskListParams, UpdateTaskRequest, WorkspaceMemberWithUser};
+use todo_shared::{Comment, Priority, Tag, Task, TaskStatus, User, Workspace, WorkspaceWithRole};
 use tokio::sync::mpsc;
 
-use crate::api::ApiClient;
+use crate::api::{ApiClient, UserPreferences};
+
+/// Preset colors for tags (hex format)
+pub const TAG_COLORS: &[&str] = &[
+    "#EF4444", // Red
+    "#F97316", // Orange
+    "#EAB308", // Yellow
+    "#22C55E", // Green
+    "#06B6D4", // Cyan
+    "#3B82F6", // Blue
+    "#8B5CF6", // Purple
+    "#EC4899", // Pink
+    "#6B7280", // Gray
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)] // Views for future implementation
@@ -50,6 +63,14 @@ pub enum TaskEditField {
     DueDate,
     TimeEstimate,
     Assignee,
+    Tags,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagManagementMode {
+    List,
+    Create,
+    Edit,
 }
 
 #[derive(Debug)]
@@ -138,6 +159,38 @@ pub struct App {
     pub search_total: i64,
     pub search_selected: usize,
     pub search_fuzzy: bool,
+
+    // Filter state
+    pub active_filters: TaskListParams,
+    pub filter_bar_visible: bool,
+
+    // Command mode
+    pub command_mode: bool,
+    pub command_input: String,
+
+    // Filter presets (from preferences)
+    pub filter_presets: Vec<FilterPreset>,
+
+    // Tags
+    pub workspace_tags: Vec<Tag>,
+
+    // Tag selector in edit mode
+    pub task_edit_selected_tags: Vec<uuid::Uuid>,
+    pub tag_selector_cursor: usize,
+
+    // Tag management popup
+    pub tag_management_visible: bool,
+    pub tag_management_cursor: usize,
+    pub tag_management_mode: TagManagementMode,
+    pub tag_create_name: String,
+    pub tag_create_color_idx: usize,
+    pub tag_edit_id: Option<uuid::Uuid>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct FilterPreset {
+    pub name: String,
+    pub filters: TaskListParams,
 }
 
 pub struct Column {
@@ -200,6 +253,22 @@ impl App {
             search_total: 0,
             search_selected: 0,
             search_fuzzy: false,
+            active_filters: TaskListParams::default(),
+            filter_bar_visible: false,
+            command_mode: false,
+            command_input: String::new(),
+            filter_presets: UserPreferences::load()
+                .map(|p| p.filter_presets)
+                .unwrap_or_default(),
+            workspace_tags: Vec::new(),
+            task_edit_selected_tags: Vec::new(),
+            tag_selector_cursor: 0,
+            tag_management_visible: false,
+            tag_management_cursor: 0,
+            tag_management_mode: TagManagementMode::List,
+            tag_create_name: String::new(),
+            tag_create_color_idx: 0,
+            tag_edit_id: None,
         }
     }
 
@@ -434,6 +503,16 @@ impl App {
             return self.handle_search_key(key).await;
         }
 
+        // Handle command mode
+        if self.command_mode {
+            return self.handle_command_key(key).await;
+        }
+
+        // Handle tag management popup
+        if self.tag_management_visible {
+            return self.handle_tag_management_key(key).await;
+        }
+
         // Handle create task popup
         if self.creating_task {
             match key.code {
@@ -541,6 +620,25 @@ impl App {
                 self.search_selected = 0;
                 self.vim_mode = VimMode::Insert;
             }
+            KeyCode::Char(':') => {
+                // Enter command mode
+                self.command_mode = true;
+                self.command_input.clear();
+                self.vim_mode = VimMode::Insert;
+            }
+            KeyCode::Char('f') => {
+                // Toggle filter bar visibility
+                self.filter_bar_visible = !self.filter_bar_visible;
+            }
+            KeyCode::Char('T') => {
+                // Open tag management popup
+                self.tag_management_visible = true;
+                self.tag_management_cursor = 0;
+                self.tag_management_mode = TagManagementMode::List;
+                self.tag_create_name.clear();
+                self.tag_create_color_idx = 0;
+                self.tag_edit_id = None;
+            }
             _ => {}
         }
 
@@ -631,6 +729,381 @@ impl App {
         }
     }
 
+    async fn handle_command_key(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Esc => {
+                self.command_mode = false;
+                self.command_input.clear();
+                self.vim_mode = VimMode::Normal;
+            }
+            KeyCode::Enter => {
+                let cmd = self.command_input.clone();
+                self.command_mode = false;
+                self.command_input.clear();
+                self.vim_mode = VimMode::Normal;
+
+                // Parse and execute the command
+                if let Err(e) = self.execute_command(&cmd).await {
+                    self.set_error(e);
+                }
+            }
+            KeyCode::Char(c) => {
+                self.command_input.push(c);
+            }
+            KeyCode::Backspace => {
+                self.command_input.pop();
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    async fn handle_tag_management_key(&mut self, key: KeyEvent) -> Result<bool> {
+        match self.tag_management_mode {
+            TagManagementMode::List => {
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => {
+                        self.tag_management_visible = false;
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if !self.workspace_tags.is_empty() {
+                            self.tag_management_cursor = (self.tag_management_cursor + 1) % self.workspace_tags.len();
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        if !self.workspace_tags.is_empty() {
+                            self.tag_management_cursor = self.tag_management_cursor
+                                .checked_sub(1)
+                                .unwrap_or(self.workspace_tags.len().saturating_sub(1));
+                        }
+                    }
+                    KeyCode::Char('n') => {
+                        // Create new tag
+                        self.tag_management_mode = TagManagementMode::Create;
+                        self.tag_create_name.clear();
+                        self.tag_create_color_idx = 0;
+                        self.vim_mode = VimMode::Insert;
+                    }
+                    KeyCode::Char('e') => {
+                        // Edit selected tag
+                        if let Some(tag) = self.workspace_tags.get(self.tag_management_cursor) {
+                            self.tag_edit_id = Some(tag.id);
+                            self.tag_create_name = tag.name.clone();
+                            self.tag_create_color_idx = 0; // Could map color to index
+                            self.tag_management_mode = TagManagementMode::Edit;
+                            self.vim_mode = VimMode::Insert;
+                        }
+                    }
+                    KeyCode::Char('d') => {
+                        // Delete selected tag
+                        self.do_delete_tag().await;
+                    }
+                    _ => {}
+                }
+            }
+            TagManagementMode::Create | TagManagementMode::Edit => {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.tag_management_mode = TagManagementMode::List;
+                        self.vim_mode = VimMode::Normal;
+                    }
+                    KeyCode::Enter => {
+                        if self.tag_management_mode == TagManagementMode::Create {
+                            self.do_create_tag().await;
+                        } else {
+                            self.do_edit_tag().await;
+                        }
+                    }
+                    KeyCode::Tab => {
+                        // Cycle through colors
+                        self.tag_create_color_idx = (self.tag_create_color_idx + 1) % TAG_COLORS.len();
+                    }
+                    KeyCode::Char(c) => {
+                        self.tag_create_name.push(c);
+                    }
+                    KeyCode::Backspace => {
+                        self.tag_create_name.pop();
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    async fn do_create_tag(&mut self) {
+        let workspace_id = match self.current_workspace {
+            Some(ref ws) => ws.id,
+            None => return,
+        };
+
+        if self.tag_create_name.trim().is_empty() {
+            return;
+        }
+
+        let color = TAG_COLORS.get(self.tag_create_color_idx).map(|s| s.to_string());
+
+        match self.api.create_tag(workspace_id, &self.tag_create_name, color.as_deref()).await {
+            Ok(tag) => {
+                self.workspace_tags.push(tag);
+                self.tag_management_mode = TagManagementMode::List;
+                self.tag_create_name.clear();
+                self.vim_mode = VimMode::Normal;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to create tag: {}", e));
+            }
+        }
+    }
+
+    async fn do_edit_tag(&mut self) {
+        let workspace_id = match self.current_workspace {
+            Some(ref ws) => ws.id,
+            None => return,
+        };
+
+        let tag_id = match self.tag_edit_id {
+            Some(id) => id,
+            None => return,
+        };
+
+        if self.tag_create_name.trim().is_empty() {
+            return;
+        }
+
+        let color = TAG_COLORS.get(self.tag_create_color_idx).map(|s| s.to_string());
+
+        match self.api.update_tag(workspace_id, tag_id, Some(&self.tag_create_name), color.as_deref()).await {
+            Ok(updated_tag) => {
+                // Update in workspace_tags
+                if let Some(tag) = self.workspace_tags.iter_mut().find(|t| t.id == tag_id) {
+                    *tag = updated_tag;
+                }
+                self.tag_management_mode = TagManagementMode::List;
+                self.tag_create_name.clear();
+                self.tag_edit_id = None;
+                self.vim_mode = VimMode::Normal;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to update tag: {}", e));
+            }
+        }
+    }
+
+    async fn do_delete_tag(&mut self) {
+        let workspace_id = match self.current_workspace {
+            Some(ref ws) => ws.id,
+            None => return,
+        };
+
+        let tag = match self.workspace_tags.get(self.tag_management_cursor) {
+            Some(t) => t.clone(),
+            None => return,
+        };
+
+        match self.api.delete_tag(workspace_id, tag.id).await {
+            Ok(()) => {
+                self.workspace_tags.retain(|t| t.id != tag.id);
+                // Adjust cursor if needed
+                if self.tag_management_cursor >= self.workspace_tags.len() && !self.workspace_tags.is_empty() {
+                    self.tag_management_cursor = self.workspace_tags.len() - 1;
+                }
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to delete tag: {}", e));
+            }
+        }
+    }
+
+    async fn execute_command(&mut self, cmd: &str) -> Result<(), String> {
+        let parts: Vec<&str> = cmd.trim().split_whitespace().collect();
+        if parts.is_empty() {
+            return Ok(());
+        }
+
+        match parts[0] {
+            "filter" => self.parse_filter_command(&parts[1..]).await,
+            "sort" => self.parse_sort_command(&parts[1..]),
+            "clear" => {
+                self.active_filters = TaskListParams::default();
+                self.filter_bar_visible = false;
+                self.reload_workspace_data().await;
+                Ok(())
+            }
+            "preset" => self.parse_preset_command(&parts[1..]).await,
+            "q" | "quit" => {
+                // This will be handled specially - return error to signal quit
+                Err("__QUIT__".to_string())
+            }
+            _ => Err(format!("Unknown command: {}", parts[0])),
+        }
+    }
+
+    async fn parse_filter_command(&mut self, args: &[&str]) -> Result<(), String> {
+        for arg in args {
+            if let Some((key, value)) = arg.split_once('=') {
+                match key {
+                    "priority" => {
+                        self.active_filters.priority = match value.to_lowercase().as_str() {
+                            "highest" => Some(Priority::Highest),
+                            "high" => Some(Priority::High),
+                            "medium" => Some(Priority::Medium),
+                            "low" => Some(Priority::Low),
+                            "lowest" => Some(Priority::Lowest),
+                            "none" => None,
+                            _ => return Err(format!("Invalid priority: {}", value)),
+                        };
+                    }
+                    "assigned" | "assignee" => {
+                        if value == "me" {
+                            self.active_filters.assigned_to = self.user.as_ref().map(|u| u.id);
+                        } else if value == "none" {
+                            self.active_filters.assigned_to = None;
+                        } else {
+                            // Try to find member by name
+                            let member = self.workspace_members.iter().find(|m| {
+                                m.display_name.to_lowercase().contains(&value.to_lowercase())
+                            });
+                            if let Some(m) = member {
+                                self.active_filters.assigned_to = Some(m.user_id);
+                            } else {
+                                return Err(format!("Member not found: {}", value));
+                            }
+                        }
+                    }
+                    "due" | "due_before" => {
+                        if let Ok(date) = value.parse::<NaiveDate>() {
+                            self.active_filters.due_before = Some(date);
+                        } else {
+                            return Err(format!("Invalid date format: {}", value));
+                        }
+                    }
+                    "due_after" => {
+                        if let Ok(date) = value.parse::<NaiveDate>() {
+                            self.active_filters.due_after = Some(date);
+                        } else {
+                            return Err(format!("Invalid date format: {}", value));
+                        }
+                    }
+                    _ => return Err(format!("Unknown filter: {}", key)),
+                }
+            } else {
+                return Err(format!("Invalid filter syntax: {}", arg));
+            }
+        }
+
+        self.filter_bar_visible = true;
+        self.reload_workspace_data().await;
+        Ok(())
+    }
+
+    fn parse_sort_command(&mut self, args: &[&str]) -> Result<(), String> {
+        if args.is_empty() {
+            return Err("Usage: sort <field> or sort -<field> (descending)".to_string());
+        }
+
+        let field = args[0];
+        let (order_by, descending) = if field.starts_with('-') {
+            (&field[1..], true)
+        } else {
+            (field, false)
+        };
+
+        // Validate field name
+        match order_by {
+            "title" | "priority" | "due_date" | "created_at" | "updated_at" | "position" => {
+                self.active_filters.order_by = Some(order_by.to_string());
+                self.active_filters.order = Some(if descending { "DESC" } else { "ASC" }.to_string());
+                self.filter_bar_visible = true;
+                Ok(())
+            }
+            _ => Err(format!("Invalid sort field: {}. Valid fields: title, priority, due_date, created_at, updated_at, position", order_by)),
+        }
+    }
+
+    async fn parse_preset_command(&mut self, args: &[&str]) -> Result<(), String> {
+        if args.len() < 2 {
+            return Err("Usage: preset save <name> or preset load <name>".to_string());
+        }
+
+        match args[0] {
+            "save" => {
+                let name = args[1].to_string();
+                let preset = FilterPreset {
+                    name: name.clone(),
+                    filters: self.active_filters.clone(),
+                };
+                // Remove existing preset with same name
+                self.filter_presets.retain(|p| p.name != name);
+                self.filter_presets.push(preset);
+
+                // Save to disk
+                let prefs = UserPreferences {
+                    filter_presets: self.filter_presets.clone(),
+                };
+                if let Err(e) = prefs.save() {
+                    return Err(format!("Failed to save preferences: {}", e));
+                }
+                Ok(())
+            }
+            "load" => {
+                let name = args[1];
+                if let Some(preset) = self.filter_presets.iter().find(|p| p.name == name) {
+                    self.active_filters = preset.filters.clone();
+                    self.filter_bar_visible = true;
+                    self.reload_workspace_data().await;
+                    Ok(())
+                } else {
+                    Err(format!("Preset not found: {}", name))
+                }
+            }
+            "list" => {
+                // Could show preset list - for now just return names
+                let names: Vec<_> = self.filter_presets.iter().map(|p| p.name.as_str()).collect();
+                if names.is_empty() {
+                    Err("No presets saved".to_string())
+                } else {
+                    Err(format!("Presets: {}", names.join(", ")))
+                }
+            }
+            _ => Err(format!("Unknown preset command: {}", args[0])),
+        }
+    }
+
+    async fn reload_workspace_data(&mut self) {
+        if let Some(ref workspace) = self.current_workspace {
+            let workspace_id = workspace.id;
+
+            // Fetch tasks with active filters
+            let params = if self.has_active_filters() {
+                Some(&self.active_filters)
+            } else {
+                None
+            };
+
+            let statuses = match self.api.list_statuses(workspace_id).await {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+
+            let tasks = match self.api.list_tasks(workspace_id, params).await {
+                Ok(response) => response.tasks,
+                Err(_) => return,
+            };
+
+            self.on_workspace_data_loaded(statuses, tasks);
+        }
+    }
+
+    fn has_active_filters(&self) -> bool {
+        self.active_filters.priority.is_some()
+            || self.active_filters.assigned_to.is_some()
+            || self.active_filters.due_before.is_some()
+            || self.active_filters.due_after.is_some()
+            || self.active_filters.q.is_some()
+            || self.active_filters.order_by.is_some()
+    }
+
     fn select_task_by_id(&mut self, task_id: uuid::Uuid) {
         for (col_idx, column) in self.columns.iter().enumerate() {
             for (task_idx, task) in column.tasks.iter().enumerate() {
@@ -719,7 +1192,7 @@ impl App {
                         TaskEditField::Description => self.edit_task_description.push(c),
                         TaskEditField::DueDate => self.edit_task_due_date_str.push(c),
                         TaskEditField::TimeEstimate => self.edit_task_time_estimate_str.push(c),
-                        TaskEditField::Priority | TaskEditField::Assignee => {} // Uses h/l, not text input
+                        TaskEditField::Priority | TaskEditField::Assignee | TaskEditField::Tags => {} // Uses h/l or space, not text input
                     }
                 }
                 KeyCode::Backspace => {
@@ -728,7 +1201,7 @@ impl App {
                         TaskEditField::Description => { self.edit_task_description.pop(); }
                         TaskEditField::DueDate => { self.edit_task_due_date_str.pop(); }
                         TaskEditField::TimeEstimate => { self.edit_task_time_estimate_str.pop(); }
-                        TaskEditField::Priority | TaskEditField::Assignee => {}
+                        TaskEditField::Priority | TaskEditField::Assignee | TaskEditField::Tags => {}
                     }
                 }
                 _ => {}
@@ -744,12 +1217,14 @@ impl App {
                 self.vim_mode = VimMode::Normal;
             }
             KeyCode::Char('i') => {
-                // Enter insert mode for current field (except Priority and Assignee)
-                if self.edit_field != TaskEditField::Priority && self.edit_field != TaskEditField::Assignee {
+                // Enter insert mode for current field (except Priority, Assignee, Tags)
+                if self.edit_field != TaskEditField::Priority
+                    && self.edit_field != TaskEditField::Assignee
+                    && self.edit_field != TaskEditField::Tags {
                     self.vim_mode = VimMode::Insert;
                 }
             }
-            KeyCode::Tab | KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Tab => {
                 // Next field
                 self.edit_field = match self.edit_field {
                     TaskEditField::Title => TaskEditField::Description,
@@ -757,18 +1232,69 @@ impl App {
                     TaskEditField::Priority => TaskEditField::DueDate,
                     TaskEditField::DueDate => TaskEditField::TimeEstimate,
                     TaskEditField::TimeEstimate => TaskEditField::Assignee,
-                    TaskEditField::Assignee => TaskEditField::Title,
+                    TaskEditField::Assignee => TaskEditField::Tags,
+                    TaskEditField::Tags => TaskEditField::Title,
                 };
             }
-            KeyCode::BackTab | KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::BackTab => {
                 // Previous field
                 self.edit_field = match self.edit_field {
-                    TaskEditField::Title => TaskEditField::Assignee,
+                    TaskEditField::Title => TaskEditField::Tags,
                     TaskEditField::Description => TaskEditField::Title,
                     TaskEditField::Priority => TaskEditField::Description,
                     TaskEditField::DueDate => TaskEditField::Priority,
                     TaskEditField::TimeEstimate => TaskEditField::DueDate,
                     TaskEditField::Assignee => TaskEditField::TimeEstimate,
+                    TaskEditField::Tags => TaskEditField::Assignee,
+                };
+            }
+            KeyCode::Char('l') | KeyCode::Right if self.edit_field == TaskEditField::Tags => {
+                // Navigate to next tag
+                if !self.workspace_tags.is_empty() {
+                    self.tag_selector_cursor = (self.tag_selector_cursor + 1) % self.workspace_tags.len();
+                }
+            }
+            KeyCode::Char('h') | KeyCode::Left if self.edit_field == TaskEditField::Tags => {
+                // Navigate to previous tag
+                if !self.workspace_tags.is_empty() {
+                    self.tag_selector_cursor = self.tag_selector_cursor
+                        .checked_sub(1)
+                        .unwrap_or(self.workspace_tags.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Char(' ') if self.edit_field == TaskEditField::Tags => {
+                // Toggle tag selection
+                if let Some(tag) = self.workspace_tags.get(self.tag_selector_cursor) {
+                    let tag_id = tag.id;
+                    if self.task_edit_selected_tags.contains(&tag_id) {
+                        self.task_edit_selected_tags.retain(|&id| id != tag_id);
+                    } else {
+                        self.task_edit_selected_tags.push(tag_id);
+                    }
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                // Next field (for non-Tags fields)
+                self.edit_field = match self.edit_field {
+                    TaskEditField::Title => TaskEditField::Description,
+                    TaskEditField::Description => TaskEditField::Priority,
+                    TaskEditField::Priority => TaskEditField::DueDate,
+                    TaskEditField::DueDate => TaskEditField::TimeEstimate,
+                    TaskEditField::TimeEstimate => TaskEditField::Assignee,
+                    TaskEditField::Assignee => TaskEditField::Tags,
+                    TaskEditField::Tags => TaskEditField::Title,
+                };
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                // Previous field (for non-Tags fields)
+                self.edit_field = match self.edit_field {
+                    TaskEditField::Title => TaskEditField::Tags,
+                    TaskEditField::Description => TaskEditField::Title,
+                    TaskEditField::Priority => TaskEditField::Description,
+                    TaskEditField::DueDate => TaskEditField::Priority,
+                    TaskEditField::TimeEstimate => TaskEditField::DueDate,
+                    TaskEditField::Assignee => TaskEditField::TimeEstimate,
+                    TaskEditField::Tags => TaskEditField::Assignee,
                 };
             }
             KeyCode::Char('h') | KeyCode::Left if self.edit_field == TaskEditField::Priority => {
@@ -952,6 +1478,12 @@ impl App {
                 self.set_loading(false, "");
                 return;
             }
+        };
+
+        // Load workspace tags
+        self.workspace_tags = match self.api.list_tags(workspace_id).await {
+            Ok(tags) => tags,
+            Err(_) => Vec::new(), // Silently fail for tags
         };
 
         self.on_workspace_data_loaded(statuses, tasks);
@@ -1299,6 +1831,9 @@ impl App {
                 .map(|m| m.to_string())
                 .unwrap_or_default();
             self.edit_task_assignee = task.assigned_to;
+            // Populate selected tags from current task
+            self.task_edit_selected_tags = task.tags.iter().map(|t| t.id).collect();
+            self.tag_selector_cursor = 0;
         }
     }
 
@@ -1333,7 +1868,20 @@ impl App {
         let result = self.update_task_with_retry(workspace_id, task_id, due_date, time_estimate_minutes).await;
 
         match result {
-            Ok(updated_task) => {
+            Ok(mut updated_task) => {
+                // Also update tags
+                let tag_ids = self.task_edit_selected_tags.clone();
+                if let Err(e) = self.api.set_task_tags(workspace_id, task_id, tag_ids.clone()).await {
+                    self.set_error(format!("Failed to update tags: {}", e));
+                } else {
+                    // Update tags in the task
+                    updated_task.tags = self.workspace_tags
+                        .iter()
+                        .filter(|t| tag_ids.contains(&t.id))
+                        .cloned()
+                        .collect();
+                }
+
                 // Update the task detail
                 self.selected_task_detail = Some(updated_task.clone());
 

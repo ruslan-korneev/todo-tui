@@ -6,7 +6,10 @@ use axum::{
 use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
 
 use crate::auth::auth_middleware;
-use crate::handlers::{auth as auth_handlers, statuses as status_handlers, workspaces as workspace_handlers};
+use crate::handlers::{
+    auth as auth_handlers, statuses as status_handlers, tasks as task_handlers,
+    workspaces as workspace_handlers,
+};
 use crate::{Config, DbPool};
 
 #[derive(Clone)]
@@ -45,11 +48,21 @@ pub fn create_router(db: DbPool, config: Config) -> Router {
         .route("/:status_id", patch(status_handlers::update_status))
         .route("/:status_id", delete(status_handlers::delete_status));
 
+    // Task routes (nested under workspaces)
+    let task_routes = Router::new()
+        .route("/", get(task_handlers::list_tasks))
+        .route("/", post(task_handlers::create_task))
+        .route("/:task_id", get(task_handlers::get_task))
+        .route("/:task_id", patch(task_handlers::update_task))
+        .route("/:task_id", delete(task_handlers::delete_task))
+        .route("/:task_id/move", post(task_handlers::move_task));
+
     // Protected routes with auth middleware
     let protected_routes = Router::new()
         .nest("/auth", protected_auth_routes)
         .nest("/workspaces", workspace_routes)
         .nest("/workspaces/:id/statuses", status_routes)
+        .nest("/workspaces/:id/tasks", task_routes)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

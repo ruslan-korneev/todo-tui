@@ -12,6 +12,7 @@ use super::jwt::verify_access_token;
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub id: Uuid,
+    #[allow(dead_code)] // Will be useful for audit logs, user display
     pub email: String,
 }
 

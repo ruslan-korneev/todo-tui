@@ -21,16 +21,25 @@ pub struct AppState {
 pub fn create_router(db: DbPool, config: Config) -> Router {
     let state = AppState { db, config };
 
-    // Public auth routes
-    let auth_routes = Router::new()
+    // Public auth routes (no middleware)
+    let public_auth_routes = Router::new()
         .route("/register", post(auth_handlers::register))
         .route("/login", post(auth_handlers::login))
         .route("/refresh", post(auth_handlers::refresh));
 
-    // Protected auth routes
+    // Protected auth routes (need auth)
     let protected_auth_routes = Router::new()
         .route("/logout", post(auth_handlers::logout))
-        .route("/me", get(auth_handlers::me));
+        .route("/me", get(auth_handlers::me))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
+    // Combine auth routes - public first, then protected
+    let auth_routes = Router::new()
+        .merge(public_auth_routes)
+        .merge(protected_auth_routes);
 
     // Workspace routes (all protected)
     let workspace_routes = Router::new()
@@ -66,7 +75,6 @@ pub fn create_router(db: DbPool, config: Config) -> Router {
 
     // Protected routes with auth middleware
     let protected_routes = Router::new()
-        .nest("/auth", protected_auth_routes)
         .nest("/workspaces", workspace_routes)
         .nest("/workspaces/:id/statuses", status_routes)
         .nest("/workspaces/:id/tasks", task_routes)

@@ -7,7 +7,7 @@ license.workspace = true
 description = "Backend server for TODO TUI application"
 
 [dependencies]
-todo-shared = { path = "../todo-shared" }
+todo-shared = { path = "../todo-shared", features = ["sqlx"] }
 
 # Async runtime
 tokio.workspace = true

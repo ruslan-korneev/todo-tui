@@ -1,5 +1,4 @@
-mod client;
 mod auth;
+mod client;
 
-pub use client::{ApiClient, TaskListResponse};
-pub use auth::AuthTokens;
+pub use client::ApiClient;

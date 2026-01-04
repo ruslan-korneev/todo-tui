@@ -14,6 +14,7 @@ use uuid::Uuid;
 use super::auth::AuthTokens;
 
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)] // Pagination fields for future use
 pub struct TaskListResponse {
     pub tasks: Vec<Task>,
     pub total: i64,
@@ -45,6 +46,7 @@ pub struct ApiClient {
     tokens: Option<AuthTokens>,
 }
 
+#[allow(dead_code)] // API methods scaffolded for future TUI features
 impl ApiClient {
     pub fn new(base_url: &str) -> Self {
         Self {

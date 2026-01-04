@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 use crate::api::ApiClient;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // Views for future implementation
 pub enum View {
     Login,
     VerifyingAuth,
@@ -27,6 +28,7 @@ pub enum InputField {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)] // Event variants for future async operations
 pub enum AppEvent {
     Key(KeyEvent),
     Tick,

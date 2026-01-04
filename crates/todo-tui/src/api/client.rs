@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use reqwest::{Client, StatusCode};
 use todo_shared::{
     api::{
@@ -12,6 +12,14 @@ use todo_shared::{
 use uuid::Uuid;
 
 use super::auth::AuthTokens;
+
+#[derive(Debug, serde::Deserialize)]
+pub struct TaskListResponse {
+    pub tasks: Vec<Task>,
+    pub total: i64,
+    pub page: u32,
+    pub limit: u32,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
@@ -436,14 +444,6 @@ impl ApiClient {
     }
 
     // ============ Tasks ============
-
-    #[derive(Debug, serde::Deserialize)]
-    pub struct TaskListResponse {
-        pub tasks: Vec<Task>,
-        pub total: i64,
-        pub page: u32,
-        pub limit: u32,
-    }
 
     pub async fn list_tasks(
         &self,

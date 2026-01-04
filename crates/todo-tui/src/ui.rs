@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, InputField, View, VimMode};
+use crate::app::{App, AuthMode, InputField, View, VimMode};
 
 pub fn draw(f: &mut Frame, app: &App) {
     // Draw based on current view
@@ -32,13 +32,16 @@ pub fn draw(f: &mut Frame, app: &App) {
 fn draw_login(f: &mut Frame, app: &App) {
     let area = f.area();
 
+    let is_register = app.auth_mode == AuthMode::Register;
+    let form_height = if is_register { 15 } else { 12 };
+
     // Center the login form
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(30),
-            Constraint::Length(12),
-            Constraint::Percentage(30),
+            Constraint::Percentage(25),
+            Constraint::Length(form_height),
+            Constraint::Percentage(25),
         ])
         .split(area);
 
@@ -54,8 +57,9 @@ fn draw_login(f: &mut Frame, app: &App) {
     let form_area = horizontal[1];
 
     // Form container
+    let title = if is_register { " Register " } else { " Login " };
     let form_block = Block::default()
-        .title(" Login ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
@@ -63,15 +67,27 @@ fn draw_login(f: &mut Frame, app: &App) {
     f.render_widget(form_block, form_area);
 
     // Form layout
-    let form_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([
+    let constraints = if is_register {
+        vec![
+            Constraint::Length(3), // Email
+            Constraint::Length(3), // Password
+            Constraint::Length(3), // Display Name
+            Constraint::Length(2), // Submit hint
+            Constraint::Min(0),    // Spacer
+        ]
+    } else {
+        vec![
             Constraint::Length(3), // Email
             Constraint::Length(3), // Password
             Constraint::Length(2), // Submit hint
             Constraint::Min(0),    // Spacer
-        ])
+        ]
+    };
+
+    let form_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints(constraints)
         .split(inner);
 
     // Email field
@@ -101,15 +117,36 @@ fn draw_login(f: &mut Frame, app: &App) {
     let password_text = Paragraph::new(password_display.as_str()).block(password_block);
     f.render_widget(password_text, form_chunks[1]);
 
+    // Display Name field (register only)
+    let (hint_idx, cursor_display_name_idx) = if is_register {
+        let display_name_style = if app.login_field == InputField::DisplayName {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        let display_name_block = Block::default()
+            .title(" Display Name ")
+            .borders(Borders::ALL)
+            .border_style(display_name_style);
+        let display_name_text =
+            Paragraph::new(app.register_display_name.as_str()).block(display_name_block);
+        f.render_widget(display_name_text, form_chunks[2]);
+        (3, Some(2))
+    } else {
+        (2, None)
+    };
+
     // Submit hint
-    let mode_text = match app.vim_mode {
-        VimMode::Normal => "Press 'i' to edit, Enter to login, 'q' to quit",
-        VimMode::Insert => "Type to enter, Esc for normal mode, Enter to login",
+    let mode_text = match (app.vim_mode, is_register) {
+        (VimMode::Normal, false) => "'i' edit | Enter submit | 'r' register | 'q' quit",
+        (VimMode::Normal, true) => "'i' edit | Enter submit | 'l' login | 'q' quit",
+        (VimMode::Insert, false) => "Type to enter | Esc normal | Enter submit",
+        (VimMode::Insert, true) => "Type to enter | Esc normal | Enter submit",
     };
     let hint = Paragraph::new(mode_text)
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
-    f.render_widget(hint, form_chunks[2]);
+    f.render_widget(hint, form_chunks[hint_idx]);
 
     // Set cursor position in insert mode
     if app.vim_mode == VimMode::Insert {
@@ -122,6 +159,16 @@ fn draw_login(f: &mut Frame, app: &App) {
                 form_chunks[1].x + 1 + app.login_password.len() as u16,
                 form_chunks[1].y + 1,
             ),
+            InputField::DisplayName => {
+                if let Some(idx) = cursor_display_name_idx {
+                    (
+                        form_chunks[idx].x + 1 + app.register_display_name.len() as u16,
+                        form_chunks[idx].y + 1,
+                    )
+                } else {
+                    (form_chunks[0].x + 1, form_chunks[0].y + 1)
+                }
+            }
         };
         f.set_cursor_position((x, y));
     }
@@ -195,11 +242,60 @@ fn draw_workspace_select(f: &mut Frame, app: &App) {
         ),
         Span::raw(" "),
         Span::styled(
-            "j/k: select | Enter: open | q: quit",
+            "n: new | j/k: select | Enter: open | L: logout | q: quit",
             Style::default().fg(Color::DarkGray),
         ),
     ]));
     f.render_widget(status, chunks[2]);
+
+    // Draw workspace creation popup if active
+    if app.creating_workspace {
+        draw_create_workspace_popup(f, app);
+    }
+}
+
+fn draw_create_workspace_popup(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 20, f.area());
+
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" New Workspace ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(3), // Name input
+            Constraint::Length(2), // Hint
+            Constraint::Min(0),    // Spacer
+        ])
+        .split(inner);
+
+    // Name input field
+    let name_block = Block::default()
+        .title(" Name ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let name_text = Paragraph::new(app.new_workspace_name.as_str()).block(name_block);
+    f.render_widget(name_text, chunks[0]);
+
+    // Hint
+    let hint = Paragraph::new("Enter: create | Esc: cancel")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    f.render_widget(hint, chunks[1]);
+
+    // Set cursor position
+    f.set_cursor_position((
+        chunks[0].x + 1 + app.new_workspace_name.len() as u16,
+        chunks[0].y + 1,
+    ));
 }
 
 fn draw_dashboard(f: &mut Frame, app: &App) {
@@ -307,7 +403,7 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
         ),
         Span::raw(" "),
         Span::styled(
-            "q: quit | h/l: columns | j/k: tasks",
+            "Backspace: back | h/l: columns | j/k: tasks | q: quit",
             Style::default().fg(Color::DarkGray),
         ),
     ]));

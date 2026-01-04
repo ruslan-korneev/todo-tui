@@ -150,7 +150,21 @@ impl ApiClient {
             .send()
             .await?;
 
-        self.handle_response(response).await
+        let auth: AuthResponse = self.handle_response(response).await?;
+
+        // Store tokens (same as login)
+        self.tokens = Some(AuthTokens {
+            access_token: auth.access_token,
+            refresh_token: auth.refresh_token,
+            user_id: auth.user_id,
+        });
+
+        if let Some(ref tokens) = self.tokens {
+            tokens.save().map_err(ApiError::Other)?;
+        }
+
+        // Fetch user details
+        self.me().await
     }
 
     pub async fn login(&mut self, email: &str, password: &str) -> Result<User, ApiError> {

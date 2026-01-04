@@ -22,9 +22,16 @@ pub enum VimMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMode {
+    Login,
+    Register,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputField {
     Email,
     Password,
+    DisplayName,
 }
 
 #[derive(Debug)]
@@ -56,14 +63,18 @@ pub struct App {
     // Current user
     pub user: Option<User>,
 
-    // Login form
+    // Login/Register form
+    pub auth_mode: AuthMode,
     pub login_email: String,
     pub login_password: String,
     pub login_field: InputField,
+    pub register_display_name: String,
 
     // Workspace selection
     pub workspaces: Vec<WorkspaceWithRole>,
     pub selected_workspace_idx: usize,
+    pub creating_workspace: bool,
+    pub new_workspace_name: String,
 
     // Dashboard state
     pub current_workspace: Option<Workspace>,
@@ -93,11 +104,15 @@ impl App {
             loading_message: String::new(),
             error_message: None,
             user: None,
+            auth_mode: AuthMode::Login,
             login_email: String::new(),
             login_password: String::new(),
             login_field: InputField::Email,
+            register_display_name: String::new(),
             workspaces: Vec::new(),
             selected_workspace_idx: 0,
+            creating_workspace: false,
+            new_workspace_name: String::new(),
             current_workspace: None,
             columns: Vec::new(),
             selected_column: 0,
@@ -162,33 +177,70 @@ impl App {
             KeyCode::Char('i') if self.vim_mode == VimMode::Normal => {
                 self.vim_mode = VimMode::Insert;
             }
+            // Toggle between Login and Register modes
+            KeyCode::Char('r') if self.vim_mode == VimMode::Normal => {
+                self.auth_mode = AuthMode::Register;
+                self.login_field = InputField::Email;
+            }
+            KeyCode::Char('l') if self.vim_mode == VimMode::Normal => {
+                self.auth_mode = AuthMode::Login;
+                self.login_field = InputField::Email;
+            }
             KeyCode::Tab | KeyCode::BackTab => {
-                self.login_field = match self.login_field {
-                    InputField::Email => InputField::Password,
-                    InputField::Password => InputField::Email,
+                self.login_field = match (self.auth_mode, self.login_field) {
+                    (AuthMode::Login, InputField::Email) => InputField::Password,
+                    (AuthMode::Login, InputField::Password) => InputField::Email,
+                    (AuthMode::Login, InputField::DisplayName) => InputField::Email,
+                    (AuthMode::Register, InputField::Email) => InputField::Password,
+                    (AuthMode::Register, InputField::Password) => InputField::DisplayName,
+                    (AuthMode::Register, InputField::DisplayName) => InputField::Email,
                 };
             }
             KeyCode::Char('j') | KeyCode::Down if self.vim_mode == VimMode::Normal => {
-                self.login_field = InputField::Password;
+                self.login_field = match (self.auth_mode, self.login_field) {
+                    (AuthMode::Login, InputField::Email) => InputField::Password,
+                    (AuthMode::Register, InputField::Email) => InputField::Password,
+                    (AuthMode::Register, InputField::Password) => InputField::DisplayName,
+                    _ => self.login_field,
+                };
             }
             KeyCode::Char('k') | KeyCode::Up if self.vim_mode == VimMode::Normal => {
-                self.login_field = InputField::Email;
+                self.login_field = match (self.auth_mode, self.login_field) {
+                    (AuthMode::Login, InputField::Password) => InputField::Email,
+                    (AuthMode::Register, InputField::Password) => InputField::Email,
+                    (AuthMode::Register, InputField::DisplayName) => InputField::Password,
+                    _ => self.login_field,
+                };
             }
             KeyCode::Enter => {
-                if !self.login_email.is_empty() && !self.login_password.is_empty() {
-                    self.do_login(tx).await;
+                match self.auth_mode {
+                    AuthMode::Login => {
+                        if !self.login_email.is_empty() && !self.login_password.is_empty() {
+                            self.do_login(tx).await;
+                        }
+                    }
+                    AuthMode::Register => {
+                        if !self.login_email.is_empty()
+                            && !self.login_password.is_empty()
+                            && !self.register_display_name.is_empty()
+                        {
+                            self.do_register(tx).await;
+                        }
+                    }
                 }
             }
             KeyCode::Char(c) if self.vim_mode == VimMode::Insert => {
                 match self.login_field {
                     InputField::Email => self.login_email.push(c),
                     InputField::Password => self.login_password.push(c),
+                    InputField::DisplayName => self.register_display_name.push(c),
                 }
             }
             KeyCode::Backspace if self.vim_mode == VimMode::Insert => {
                 match self.login_field {
                     InputField::Email => { self.login_email.pop(); }
                     InputField::Password => { self.login_password.pop(); }
+                    InputField::DisplayName => { self.register_display_name.pop(); }
                 }
             }
             _ => {}
@@ -206,8 +258,39 @@ impl App {
             return Ok(false);
         }
 
+        // Handle workspace creation mode
+        if self.creating_workspace {
+            match key.code {
+                KeyCode::Esc => {
+                    self.creating_workspace = false;
+                    self.new_workspace_name.clear();
+                }
+                KeyCode::Enter => {
+                    if !self.new_workspace_name.is_empty() {
+                        self.do_create_workspace().await;
+                    }
+                }
+                KeyCode::Char(c) => {
+                    self.new_workspace_name.push(c);
+                }
+                KeyCode::Backspace => {
+                    self.new_workspace_name.pop();
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
+        // Normal workspace selection mode
         match key.code {
             KeyCode::Char('q') => return Ok(true),
+            KeyCode::Char('L') => {
+                self.do_logout().await;
+            }
+            KeyCode::Char('n') => {
+                self.creating_workspace = true;
+                self.new_workspace_name.clear();
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.selected_workspace_idx < self.workspaces.len().saturating_sub(1) {
                     self.selected_workspace_idx += 1;
@@ -230,6 +313,34 @@ impl App {
         Ok(false)
     }
 
+    async fn do_create_workspace(&mut self) {
+        self.set_loading(true, "Creating workspace...");
+
+        let name = self.new_workspace_name.clone();
+
+        match self.api.create_workspace(&name, None).await {
+            Ok(_) => {
+                self.creating_workspace = false;
+                self.new_workspace_name.clear();
+                self.load_workspaces().await;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to create workspace: {}", e));
+            }
+        }
+
+        self.set_loading(false, "");
+    }
+
+    async fn do_logout(&mut self) {
+        let _ = self.api.logout().await;
+        self.user = None;
+        self.workspaces.clear();
+        self.current_workspace = None;
+        self.columns.clear();
+        self.view = View::Login;
+    }
+
     async fn handle_dashboard_key(
         &mut self,
         key: KeyEvent,
@@ -237,6 +348,7 @@ impl App {
     ) -> Result<bool> {
         match key.code {
             KeyCode::Char('q') => return Ok(true),
+            KeyCode::Backspace => self.go_back_to_workspace_select(),
             KeyCode::Char('h') | KeyCode::Left => self.move_left(),
             KeyCode::Char('l') | KeyCode::Right => self.move_right(),
             KeyCode::Char('j') | KeyCode::Down => self.move_down(),
@@ -245,6 +357,14 @@ impl App {
         }
 
         Ok(false)
+    }
+
+    fn go_back_to_workspace_select(&mut self) {
+        self.current_workspace = None;
+        self.columns.clear();
+        self.selected_column = 0;
+        self.selected_task = 0;
+        self.view = View::WorkspaceSelect;
     }
 
     async fn do_login(&mut self, tx: mpsc::Sender<AppEvent>) {
@@ -260,6 +380,26 @@ impl App {
             }
             Err(e) => {
                 let _ = tx.send(AppEvent::AuthFailed(e.to_string())).await;
+            }
+        }
+
+        self.set_loading(false, "");
+    }
+
+    async fn do_register(&mut self, tx: mpsc::Sender<AppEvent>) {
+        self.set_loading(true, "Registering...");
+
+        let email = self.login_email.clone();
+        let password = self.login_password.clone();
+        let display_name = self.register_display_name.clone();
+
+        match self.api.register(&email, &password, &display_name).await {
+            Ok(user) => {
+                self.user = Some(user);
+                let _ = tx.send(AppEvent::AuthSuccess).await;
+            }
+            Err(e) => {
+                self.set_error(format!("Registration failed: {}", e));
             }
         }
 

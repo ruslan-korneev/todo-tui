@@ -73,11 +73,11 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 - [x] TaskCard component
 - [x] Vim navigation (h/j/k/l)
 - [x] Task selection highlighting
-- [ ] Move task between columns (m + h/l)
+- [x] Move task between columns (m + h/l)
 - [ ] Scroll within columns
 
 ### 2.3 Task Detail
-- [ ] TaskDetail side panel
+- [x] TaskDetail side panel
 - [ ] Title/description editor
 - [ ] Priority selector (lowest/low/medium/high/highest)
 - [ ] Due date picker
@@ -89,8 +89,8 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 - [x] POST /api/v1/workspaces/{wid}/tasks/{id}/comments
 - [x] PUT /api/v1/workspaces/{wid}/tasks/{id}/comments/{cid}
 - [x] DELETE /api/v1/workspaces/{wid}/tasks/{id}/comments/{cid}
-- [ ] Comments list in task detail TUI
-- [ ] Add comment with timestamp
+- [x] Comments list in task detail TUI
+- [x] Add comment with timestamp
 
 ---
 

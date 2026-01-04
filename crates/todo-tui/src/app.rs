@@ -1,6 +1,6 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use todo_shared::{Task, TaskStatus, Workspace, WorkspaceWithRole, User};
+use todo_shared::{Comment, Task, TaskStatus, Workspace, WorkspaceWithRole, User};
 use tokio::sync::mpsc;
 
 use crate::api::ApiClient;
@@ -81,6 +81,15 @@ pub struct App {
     pub columns: Vec<Column>,
     pub selected_column: usize,
     pub selected_task: usize,
+    pub moving_task: bool,
+    #[allow(dead_code)] // Prepared for scroll feature
+    pub column_scroll_offsets: Vec<usize>,
+
+    // Task detail state
+    pub selected_task_detail: Option<Task>,
+    pub task_comments: Vec<Comment>,
+    pub adding_comment: bool,
+    pub new_comment_content: String,
 }
 
 pub struct Column {
@@ -117,6 +126,12 @@ impl App {
             columns: Vec::new(),
             selected_column: 0,
             selected_task: 0,
+            moving_task: false,
+            column_scroll_offsets: Vec::new(),
+            selected_task_detail: None,
+            task_comments: Vec::new(),
+            adding_comment: false,
+            new_comment_content: String::new(),
         }
     }
 
@@ -154,7 +169,7 @@ impl App {
             View::VerifyingAuth => Ok(false), // No input during verification
             View::WorkspaceSelect => self.handle_workspace_select_key(key, tx).await,
             View::Dashboard => self.handle_dashboard_key(key, tx).await,
-            View::TaskDetail => Ok(false), // TODO
+            View::TaskDetail => self.handle_task_detail_key(key, tx).await,
         }
     }
 
@@ -346,6 +361,23 @@ impl App {
         key: KeyEvent,
         _tx: mpsc::Sender<AppEvent>,
     ) -> Result<bool> {
+        // Handle move mode
+        if self.moving_task {
+            match key.code {
+                KeyCode::Esc => {
+                    self.moving_task = false;
+                }
+                KeyCode::Char('h') | KeyCode::Left => {
+                    self.do_move_task_left().await;
+                }
+                KeyCode::Char('l') | KeyCode::Right => {
+                    self.do_move_task_right().await;
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
         match key.code {
             KeyCode::Char('q') => return Ok(true),
             KeyCode::Backspace => self.go_back_to_workspace_select(),
@@ -353,6 +385,65 @@ impl App {
             KeyCode::Char('l') | KeyCode::Right => self.move_right(),
             KeyCode::Char('j') | KeyCode::Down => self.move_down(),
             KeyCode::Char('k') | KeyCode::Up => self.move_up(),
+            KeyCode::Char('m') => {
+                // Enter move mode if there's a selected task
+                if self.get_selected_task().is_some() {
+                    self.moving_task = true;
+                }
+            }
+            KeyCode::Enter => {
+                self.open_task_detail().await;
+            }
+            _ => {}
+        }
+
+        Ok(false)
+    }
+
+    async fn handle_task_detail_key(
+        &mut self,
+        key: KeyEvent,
+        _tx: mpsc::Sender<AppEvent>,
+    ) -> Result<bool> {
+        // Handle comment input mode
+        if self.adding_comment {
+            match key.code {
+                KeyCode::Esc => {
+                    self.adding_comment = false;
+                    self.new_comment_content.clear();
+                    self.vim_mode = VimMode::Normal;
+                }
+                KeyCode::Enter => {
+                    if !self.new_comment_content.is_empty() {
+                        self.do_add_comment().await;
+                    }
+                }
+                KeyCode::Char(c) => {
+                    self.new_comment_content.push(c);
+                }
+                KeyCode::Backspace => {
+                    self.new_comment_content.pop();
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.close_task_detail();
+            }
+            KeyCode::Char('a') => {
+                // Add comment
+                self.adding_comment = true;
+                self.vim_mode = VimMode::Insert;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                // Scroll comments down (future enhancement)
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                // Scroll comments up (future enhancement)
+            }
             _ => {}
         }
 
@@ -534,6 +625,157 @@ impl App {
         if let Some(column) = self.columns.get(self.selected_column) {
             if self.selected_task < column.tasks.len().saturating_sub(1) {
                 self.selected_task += 1;
+            }
+        }
+    }
+
+    pub fn get_selected_task(&self) -> Option<&Task> {
+        self.columns
+            .get(self.selected_column)
+            .and_then(|col| col.tasks.get(self.selected_task))
+    }
+
+    async fn do_move_task_left(&mut self) {
+        if self.selected_column == 0 {
+            return;
+        }
+
+        let workspace_id = match self.current_workspace {
+            Some(ref ws) => ws.id,
+            None => return,
+        };
+
+        let task = match self.get_selected_task() {
+            Some(t) => t.clone(),
+            None => return,
+        };
+
+        let target_column = self.selected_column - 1;
+        let target_status_id = self.columns[target_column].status.id;
+
+        match self.api.move_task(workspace_id, task.id, target_status_id, None).await {
+            Ok(updated_task) => {
+                // Remove from current column
+                if let Some(col) = self.columns.get_mut(self.selected_column) {
+                    col.tasks.retain(|t| t.id != task.id);
+                }
+                // Add to target column
+                if let Some(col) = self.columns.get_mut(target_column) {
+                    col.tasks.push(updated_task);
+                    col.tasks.sort_by_key(|t| t.position);
+                }
+                // Move selection
+                self.selected_column = target_column;
+                self.selected_task = self.columns[target_column].tasks.len().saturating_sub(1);
+                self.moving_task = false;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to move task: {}", e));
+            }
+        }
+    }
+
+    async fn do_move_task_right(&mut self) {
+        if self.columns.is_empty() || self.selected_column >= self.columns.len() - 1 {
+            return;
+        }
+
+        let workspace_id = match self.current_workspace {
+            Some(ref ws) => ws.id,
+            None => return,
+        };
+
+        let task = match self.get_selected_task() {
+            Some(t) => t.clone(),
+            None => return,
+        };
+
+        let target_column = self.selected_column + 1;
+        let target_status_id = self.columns[target_column].status.id;
+
+        match self.api.move_task(workspace_id, task.id, target_status_id, None).await {
+            Ok(updated_task) => {
+                // Remove from current column
+                if let Some(col) = self.columns.get_mut(self.selected_column) {
+                    col.tasks.retain(|t| t.id != task.id);
+                }
+                // Add to target column
+                if let Some(col) = self.columns.get_mut(target_column) {
+                    col.tasks.push(updated_task);
+                    col.tasks.sort_by_key(|t| t.position);
+                }
+                // Move selection
+                self.selected_column = target_column;
+                self.selected_task = self.columns[target_column].tasks.len().saturating_sub(1);
+                self.moving_task = false;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to move task: {}", e));
+            }
+        }
+    }
+
+    async fn open_task_detail(&mut self) {
+        let workspace_id = match self.current_workspace {
+            Some(ref ws) => ws.id,
+            None => return,
+        };
+
+        let task = match self.get_selected_task() {
+            Some(t) => t.clone(),
+            None => return,
+        };
+
+        self.set_loading(true, "Loading task details...");
+
+        // Load comments
+        match self.api.list_comments(workspace_id, task.id).await {
+            Ok(comments) => {
+                self.task_comments = comments;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to load comments: {}", e));
+                self.set_loading(false, "");
+                return;
+            }
+        }
+
+        self.selected_task_detail = Some(task);
+        self.view = View::TaskDetail;
+        self.set_loading(false, "");
+    }
+
+    fn close_task_detail(&mut self) {
+        self.selected_task_detail = None;
+        self.task_comments.clear();
+        self.adding_comment = false;
+        self.new_comment_content.clear();
+        self.vim_mode = VimMode::Normal;
+        self.view = View::Dashboard;
+    }
+
+    async fn do_add_comment(&mut self) {
+        let workspace_id = match self.current_workspace {
+            Some(ref ws) => ws.id,
+            None => return,
+        };
+
+        let task_id = match self.selected_task_detail {
+            Some(ref t) => t.id,
+            None => return,
+        };
+
+        let content = self.new_comment_content.clone();
+
+        match self.api.create_comment(workspace_id, task_id, &content).await {
+            Ok(comment) => {
+                self.task_comments.push(comment);
+                self.new_comment_content.clear();
+                self.adding_comment = false;
+                self.vim_mode = VimMode::Normal;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to add comment: {}", e));
             }
         }
     }

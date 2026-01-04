@@ -15,7 +15,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         View::VerifyingAuth => draw_loading(f, "Verifying authentication..."),
         View::WorkspaceSelect => draw_workspace_select(f, app),
         View::Dashboard => draw_dashboard(f, app),
-        View::TaskDetail => draw_dashboard(f, app), // TODO: implement task detail
+        View::TaskDetail => draw_task_detail(f, app),
     }
 
     // Draw error overlay if present
@@ -391,21 +391,212 @@ fn draw_kanban(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
-    let mode = match app.vim_mode {
-        VimMode::Normal => "NORMAL",
-        VimMode::Insert => "INSERT",
+    let (mode, mode_color) = if app.moving_task {
+        ("MOVE", Color::Magenta)
+    } else {
+        match app.vim_mode {
+            VimMode::Normal => ("NORMAL", Color::Blue),
+            VimMode::Insert => ("INSERT", Color::Green),
+        }
+    };
+
+    let hints = if app.moving_task {
+        "h/l: move task | Esc: cancel"
+    } else {
+        "Backspace: back | h/l: columns | j/k: tasks | m: move | Enter: details | q: quit"
     };
 
     let status = Paragraph::new(Line::from(vec![
         Span::styled(
             format!(" {} ", mode),
-            Style::default().bg(Color::Blue).fg(Color::White),
+            Style::default().bg(mode_color).fg(Color::White),
         ),
         Span::raw(" "),
+        Span::styled(hints, Style::default().fg(Color::DarkGray)),
+    ]));
+
+    f.render_widget(status, area);
+}
+
+fn draw_task_detail(f: &mut Frame, app: &App) {
+    let task = match &app.selected_task_detail {
+        Some(t) => t,
+        None => return,
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Main content
+            Constraint::Length(1), // Status bar
+        ])
+        .split(f.area());
+
+    // Header
+    draw_header(f, chunks[0], app);
+
+    // Main content: split into task info and comments
+    let content_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50), // Task details
+            Constraint::Percentage(50), // Comments
+        ])
+        .split(chunks[1]);
+
+    // Task details panel
+    let mut task_lines = vec![
+        Line::from(vec![
+            Span::styled("Title: ", Style::default().fg(Color::Cyan)),
+            Span::raw(&task.title),
+        ]),
+        Line::from(""),
+    ];
+
+    // Description
+    if let Some(ref desc) = task.description {
+        task_lines.push(Line::from(Span::styled(
+            "Description:",
+            Style::default().fg(Color::Cyan),
+        )));
+        for line in desc.lines() {
+            task_lines.push(Line::from(format!("  {}", line)));
+        }
+        task_lines.push(Line::from(""));
+    }
+
+    // Priority
+    if let Some(ref priority) = task.priority {
+        let priority_color = match priority {
+            todo_shared::Priority::Highest => Color::Red,
+            todo_shared::Priority::High => Color::LightRed,
+            todo_shared::Priority::Medium => Color::Yellow,
+            todo_shared::Priority::Low => Color::Green,
+            todo_shared::Priority::Lowest => Color::DarkGray,
+        };
+        task_lines.push(Line::from(vec![
+            Span::styled("Priority: ", Style::default().fg(Color::Cyan)),
+            Span::styled(format!("{:?}", priority), Style::default().fg(priority_color)),
+        ]));
+    }
+
+    // Due date
+    if let Some(ref due_date) = task.due_date {
+        task_lines.push(Line::from(vec![
+            Span::styled("Due Date: ", Style::default().fg(Color::Cyan)),
+            Span::raw(due_date.to_string()),
+        ]));
+    }
+
+    // Time estimate
+    if let Some(minutes) = task.time_estimate_minutes {
+        let hours = minutes / 60;
+        let mins = minutes % 60;
+        let estimate = if hours > 0 {
+            format!("{}h {}m", hours, mins)
+        } else {
+            format!("{}m", mins)
+        };
+        task_lines.push(Line::from(vec![
+            Span::styled("Time Estimate: ", Style::default().fg(Color::Cyan)),
+            Span::raw(estimate),
+        ]));
+    }
+
+    // Created at
+    task_lines.push(Line::from(vec![
+        Span::styled("Created: ", Style::default().fg(Color::Cyan)),
+        Span::raw(task.created_at.format("%Y-%m-%d %H:%M").to_string()),
+    ]));
+
+    let task_details = Paragraph::new(task_lines)
+        .block(
+            Block::default()
+                .title(" Task Details ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false });
+
+    f.render_widget(task_details, content_chunks[0]);
+
+    // Comments panel
+    let comments_area = content_chunks[1];
+
+    let inner_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),    // Comments list
+            Constraint::Length(3), // Comment input (if adding)
+        ])
+        .split(comments_area);
+
+    // Comments list
+    let comment_items: Vec<ListItem> = app
+        .task_comments
+        .iter()
+        .map(|comment| {
+            let timestamp = comment.created_at.format("%Y-%m-%d %H:%M").to_string();
+            let content = Line::from(vec![
+                Span::styled(
+                    format!("[{}] ", timestamp),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::raw(&comment.content),
+            ]);
+            ListItem::new(content)
+        })
+        .collect();
+
+    let comments_list = List::new(comment_items).block(
+        Block::default()
+            .title(format!(" Comments ({}) ", app.task_comments.len()))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+
+    f.render_widget(comments_list, inner_chunks[0]);
+
+    // Comment input (if adding)
+    if app.adding_comment {
+        let input_block = Block::default()
+            .title(" New Comment ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow));
+        let input = Paragraph::new(app.new_comment_content.as_str()).block(input_block);
+        f.render_widget(input, inner_chunks[1]);
+
+        // Set cursor position
+        f.set_cursor_position((
+            inner_chunks[1].x + 1 + app.new_comment_content.len() as u16,
+            inner_chunks[1].y + 1,
+        ));
+    }
+
+    // Status bar
+    draw_task_detail_status_bar(f, chunks[2], app);
+}
+
+fn draw_task_detail_status_bar(f: &mut Frame, area: Rect, app: &App) {
+    let (mode, mode_color) = match app.vim_mode {
+        VimMode::Normal => ("NORMAL", Color::Blue),
+        VimMode::Insert => ("INSERT", Color::Green),
+    };
+
+    let hints = if app.adding_comment {
+        "Type comment | Enter: submit | Esc: cancel"
+    } else {
+        "a: add comment | q/Esc: back to kanban"
+    };
+
+    let status = Paragraph::new(Line::from(vec![
         Span::styled(
-            "Backspace: back | h/l: columns | j/k: tasks | q: quit",
-            Style::default().fg(Color::DarkGray),
+            format!(" {} ", mode),
+            Style::default().bg(mode_color).fg(Color::White),
         ),
+        Span::raw(" "),
+        Span::styled(hints, Style::default().fg(Color::DarkGray)),
     ]));
 
     f.render_widget(status, area);

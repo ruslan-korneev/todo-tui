@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::models::WorkspaceRole;
+use crate::models::{WorkspaceRole, WorkspaceSettings};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateWorkspaceRequest {
@@ -16,6 +16,8 @@ pub struct UpdateWorkspaceRequest {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<WorkspaceSettings>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -50,4 +52,12 @@ pub struct UpdateStatusRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReorderStatusesRequest {
     pub status_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceMemberWithUser {
+    pub user_id: Uuid,
+    pub display_name: String,
+    pub email: String,
+    pub role: WorkspaceRole,
 }

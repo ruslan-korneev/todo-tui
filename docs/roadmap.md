@@ -76,7 +76,7 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 - [x] Move task between columns (m + h/l)
 - [x] Create task (n key)
 - [x] Delete task (d key)
-- [ ] Scroll within columns
+- [x] Scroll within columns (with scroll indicators)
 
 ### 2.3 Task Detail
 - [x] TaskDetail side panel
@@ -84,7 +84,8 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 - [x] Priority selector (lowest/low/medium/high/highest)
 - [x] Due date picker
 - [x] Time estimate input
-- [ ] Assignee selector
+- [x] Assignee selector (h/l to cycle through workspace members)
+- [x] Default assignee on task creation (workspace setting override)
 
 ### 2.4 Comments
 - [x] GET /api/v1/workspaces/{wid}/tasks/{id}/comments
@@ -130,7 +131,7 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 - [x] Role-based permissions middleware
 
 ### 4.2 Members & Invitations
-- [ ] GET /api/v1/workspaces/{id}/members
+- [x] GET /api/v1/workspaces/{id}/members
 - [ ] POST /api/v1/workspaces/{id}/invites - Send invite
 - [ ] GET /api/v1/invites/{token} - Get invite details
 - [ ] POST /api/v1/invites/{token}/accept - Accept invite

@@ -5,9 +5,9 @@ use todo_shared::{
         AuthResponse, CreateTaskRequest, CreateWorkspaceRequest, LoginRequest,
         MoveTaskRequest, RefreshRequest, RegisterRequest, UpdateTaskRequest,
         UpdateWorkspaceRequest, CreateStatusRequest, UpdateStatusRequest,
-        CreateCommentRequest, UpdateCommentRequest,
+        CreateCommentRequest, UpdateCommentRequest, WorkspaceMemberWithUser,
     },
-    Comment, Task, TaskStatus, User, Workspace, WorkspaceWithRole,
+    Comment, Task, TaskStatus, User, Workspace, WorkspaceSettings, WorkspaceWithRole,
 };
 use uuid::Uuid;
 
@@ -313,12 +313,14 @@ impl ApiClient {
         id: Uuid,
         name: Option<&str>,
         description: Option<&str>,
+        settings: Option<WorkspaceSettings>,
     ) -> Result<Workspace, ApiError> {
         let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
 
         let req = UpdateWorkspaceRequest {
             name: name.map(|s| s.to_string()),
             description: description.map(|s| s.to_string()),
+            settings,
         };
 
         let response = self
@@ -326,6 +328,22 @@ impl ApiClient {
             .patch(&self.url(&format!("/workspaces/{}", id)))
             .header("Authorization", &auth)
             .json(&req)
+            .send()
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    pub async fn list_members(
+        &self,
+        workspace_id: Uuid,
+    ) -> Result<Vec<WorkspaceMemberWithUser>, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let response = self
+            .client
+            .get(&self.url(&format!("/workspaces/{}/members", workspace_id)))
+            .header("Authorization", &auth)
             .send()
             .await?;
 

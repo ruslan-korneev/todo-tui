@@ -47,7 +47,8 @@ pub fn create_router(db: DbPool, config: Config) -> Router {
         .route("/", get(workspace_handlers::list_workspaces))
         .route("/:id", get(workspace_handlers::get_workspace))
         .route("/:id", patch(workspace_handlers::update_workspace))
-        .route("/:id", delete(workspace_handlers::delete_workspace));
+        .route("/:id", delete(workspace_handlers::delete_workspace))
+        .route("/:id/members", get(workspace_handlers::list_members));
 
     // Status routes (nested under workspaces)
     let status_routes = Router::new()

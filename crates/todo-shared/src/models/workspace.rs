@@ -2,6 +2,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_assignee: Option<Uuid>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(feature = "sqlx", sqlx(type_name = "workspace_role", rename_all = "lowercase"))]
@@ -35,6 +41,8 @@ pub struct Workspace {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub owner_id: Uuid,
+    #[serde(default)]
+    pub settings: WorkspaceSettings,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

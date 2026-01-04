@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::NaiveDate;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use todo_shared::{Comment, Priority, Task, TaskStatus, Workspace, WorkspaceWithRole, User};
-use todo_shared::api::{CreateTaskRequest, UpdateTaskRequest};
+use todo_shared::api::{CreateTaskRequest, UpdateTaskRequest, WorkspaceMemberWithUser};
 use tokio::sync::mpsc;
 
 use crate::api::ApiClient;
@@ -49,6 +49,7 @@ pub enum TaskEditField {
     Priority,
     DueDate,
     TimeEstimate,
+    Assignee,
 }
 
 #[derive(Debug)]
@@ -125,6 +126,10 @@ pub struct App {
     pub edit_task_priority: Option<Priority>,
     pub edit_task_due_date_str: String,
     pub edit_task_time_estimate_str: String,
+    pub edit_task_assignee: Option<uuid::Uuid>,
+
+    // Workspace members (for assignee selection)
+    pub workspace_members: Vec<WorkspaceMemberWithUser>,
 }
 
 pub struct Column {
@@ -179,6 +184,8 @@ impl App {
             edit_task_priority: None,
             edit_task_due_date_str: String::new(),
             edit_task_time_estimate_str: String::new(),
+            edit_task_assignee: None,
+            workspace_members: Vec::new(),
         }
     }
 
@@ -589,7 +596,7 @@ impl App {
                         TaskEditField::Description => self.edit_task_description.push(c),
                         TaskEditField::DueDate => self.edit_task_due_date_str.push(c),
                         TaskEditField::TimeEstimate => self.edit_task_time_estimate_str.push(c),
-                        TaskEditField::Priority => {} // Priority uses h/l, not text input
+                        TaskEditField::Priority | TaskEditField::Assignee => {} // Uses h/l, not text input
                     }
                 }
                 KeyCode::Backspace => {
@@ -598,7 +605,7 @@ impl App {
                         TaskEditField::Description => { self.edit_task_description.pop(); }
                         TaskEditField::DueDate => { self.edit_task_due_date_str.pop(); }
                         TaskEditField::TimeEstimate => { self.edit_task_time_estimate_str.pop(); }
-                        TaskEditField::Priority => {}
+                        TaskEditField::Priority | TaskEditField::Assignee => {}
                     }
                 }
                 _ => {}
@@ -614,8 +621,8 @@ impl App {
                 self.vim_mode = VimMode::Normal;
             }
             KeyCode::Char('i') => {
-                // Enter insert mode for current field (except Priority)
-                if self.edit_field != TaskEditField::Priority {
+                // Enter insert mode for current field (except Priority and Assignee)
+                if self.edit_field != TaskEditField::Priority && self.edit_field != TaskEditField::Assignee {
                     self.vim_mode = VimMode::Insert;
                 }
             }
@@ -626,17 +633,19 @@ impl App {
                     TaskEditField::Description => TaskEditField::Priority,
                     TaskEditField::Priority => TaskEditField::DueDate,
                     TaskEditField::DueDate => TaskEditField::TimeEstimate,
-                    TaskEditField::TimeEstimate => TaskEditField::Title,
+                    TaskEditField::TimeEstimate => TaskEditField::Assignee,
+                    TaskEditField::Assignee => TaskEditField::Title,
                 };
             }
             KeyCode::BackTab | KeyCode::Char('k') | KeyCode::Up => {
                 // Previous field
                 self.edit_field = match self.edit_field {
-                    TaskEditField::Title => TaskEditField::TimeEstimate,
+                    TaskEditField::Title => TaskEditField::Assignee,
                     TaskEditField::Description => TaskEditField::Title,
                     TaskEditField::Priority => TaskEditField::Description,
                     TaskEditField::DueDate => TaskEditField::Priority,
                     TaskEditField::TimeEstimate => TaskEditField::DueDate,
+                    TaskEditField::Assignee => TaskEditField::TimeEstimate,
                 };
             }
             KeyCode::Char('h') | KeyCode::Left if self.edit_field == TaskEditField::Priority => {
@@ -658,6 +667,34 @@ impl App {
                     Some(Priority::High) => Priority::Highest,
                     Some(Priority::Highest) | None => Priority::Highest,
                 });
+            }
+            KeyCode::Char('h') | KeyCode::Left if self.edit_field == TaskEditField::Assignee => {
+                // Previous assignee (or none)
+                if self.workspace_members.is_empty() {
+                    self.edit_task_assignee = None;
+                } else {
+                    let current_idx = self.edit_task_assignee
+                        .and_then(|id| self.workspace_members.iter().position(|m| m.user_id == id));
+                    self.edit_task_assignee = match current_idx {
+                        None => Some(self.workspace_members.last().unwrap().user_id),
+                        Some(0) => None, // Go to "none"
+                        Some(i) => Some(self.workspace_members[i - 1].user_id),
+                    };
+                }
+            }
+            KeyCode::Char('l') | KeyCode::Right if self.edit_field == TaskEditField::Assignee => {
+                // Next assignee
+                if self.workspace_members.is_empty() {
+                    self.edit_task_assignee = None;
+                } else {
+                    let current_idx = self.edit_task_assignee
+                        .and_then(|id| self.workspace_members.iter().position(|m| m.user_id == id));
+                    self.edit_task_assignee = match current_idx {
+                        None => Some(self.workspace_members[0].user_id),
+                        Some(i) if i + 1 >= self.workspace_members.len() => None, // Wrap to "none"
+                        Some(i) => Some(self.workspace_members[i + 1].user_id),
+                    };
+                }
             }
             KeyCode::Enter => {
                 // Save changes
@@ -814,6 +851,9 @@ impl App {
             })
             .collect();
 
+        // Initialize scroll offsets for each column
+        self.column_scroll_offsets = vec![0; self.columns.len()];
+
         self.selected_column = 0;
         self.selected_task = 0;
         self.view = View::Dashboard;
@@ -824,6 +864,10 @@ impl App {
         if self.selected_column > 0 {
             self.selected_column -= 1;
             self.selected_task = 0;
+            // Reset scroll for new column
+            if let Some(offset) = self.column_scroll_offsets.get_mut(self.selected_column) {
+                *offset = 0;
+            }
         }
     }
 
@@ -831,12 +875,22 @@ impl App {
         if !self.columns.is_empty() && self.selected_column < self.columns.len() - 1 {
             self.selected_column += 1;
             self.selected_task = 0;
+            // Reset scroll for new column
+            if let Some(offset) = self.column_scroll_offsets.get_mut(self.selected_column) {
+                *offset = 0;
+            }
         }
     }
 
     pub fn move_up(&mut self) {
         if self.selected_task > 0 {
             self.selected_task -= 1;
+            // Adjust scroll if selection is above visible area
+            if let Some(offset) = self.column_scroll_offsets.get_mut(self.selected_column) {
+                if self.selected_task < *offset {
+                    *offset = self.selected_task;
+                }
+            }
         }
     }
 
@@ -844,6 +898,15 @@ impl App {
         if let Some(column) = self.columns.get(self.selected_column) {
             if self.selected_task < column.tasks.len().saturating_sub(1) {
                 self.selected_task += 1;
+                // Adjust scroll if selection is below visible area
+                // Assume ~3 tasks visible per column (conservative estimate)
+                // The actual visible count depends on terminal height
+                if let Some(offset) = self.column_scroll_offsets.get_mut(self.selected_column) {
+                    let visible_tasks = 5; // Conservative default, UI will handle actual rendering
+                    if self.selected_task >= *offset + visible_tasks {
+                        *offset = self.selected_task.saturating_sub(visible_tasks - 1);
+                    }
+                }
             }
         }
     }
@@ -959,6 +1022,17 @@ impl App {
             }
         }
 
+        // Load workspace members for assignee selection
+        match self.api.list_members(workspace_id).await {
+            Ok(members) => {
+                self.workspace_members = members;
+            }
+            Err(_) => {
+                // Non-critical, continue without members
+                self.workspace_members.clear();
+            }
+        }
+
         self.selected_task_detail = Some(task);
         self.view = View::TaskDetail;
         self.set_loading(false, "");
@@ -1011,6 +1085,12 @@ impl App {
             None => return,
         };
 
+        // Determine default assignee: workspace setting > self
+        let assigned_to = self.current_workspace
+            .as_ref()
+            .and_then(|ws| ws.settings.default_assignee)
+            .or_else(|| self.user.as_ref().map(|u| u.id));
+
         let req = CreateTaskRequest {
             title: self.new_task_title.clone(),
             status_id,
@@ -1022,7 +1102,7 @@ impl App {
             priority: None,
             due_date: None,
             time_estimate_minutes: None,
-            assigned_to: None,
+            assigned_to,
         };
 
         self.set_loading(true, "Creating task...");
@@ -1095,6 +1175,7 @@ impl App {
             self.edit_task_time_estimate_str = task.time_estimate_minutes
                 .map(|m| m.to_string())
                 .unwrap_or_default();
+            self.edit_task_assignee = task.assigned_to;
         }
     }
 
@@ -1171,7 +1252,7 @@ impl App {
             priority: self.edit_task_priority,
             due_date,
             time_estimate_minutes,
-            assigned_to: None,
+            assigned_to: self.edit_task_assignee,
         };
 
         // First attempt

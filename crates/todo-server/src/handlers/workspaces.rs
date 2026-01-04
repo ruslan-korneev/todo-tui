@@ -4,8 +4,8 @@ use axum::{
 };
 use chrono::Utc;
 use todo_shared::{
-    api::{CreateWorkspaceRequest, UpdateWorkspaceRequest},
-    Workspace, WorkspaceRole, WorkspaceWithRole,
+    api::{CreateWorkspaceRequest, UpdateWorkspaceRequest, WorkspaceMemberWithUser},
+    Workspace, WorkspaceRole, WorkspaceSettings, WorkspaceWithRole,
 };
 use uuid::Uuid;
 
@@ -105,6 +105,7 @@ pub async fn create_workspace(
         slug,
         description: req.description,
         owner_id: user.id,
+        settings: WorkspaceSettings::default(),
         created_at: now,
         updated_at: now,
     }))
@@ -115,9 +116,9 @@ pub async fn list_workspaces(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
 ) -> Result<Json<Vec<WorkspaceWithRole>>, AppError> {
-    let rows: Vec<(Uuid, String, String, Option<String>, Uuid, chrono::DateTime<Utc>, chrono::DateTime<Utc>, WorkspaceRole)> = sqlx::query_as(
+    let rows: Vec<(Uuid, String, String, Option<String>, Uuid, serde_json::Value, chrono::DateTime<Utc>, chrono::DateTime<Utc>, WorkspaceRole)> = sqlx::query_as(
         r#"
-        SELECT w.id, w.name, w.slug, w.description, w.owner_id, w.created_at, w.updated_at, wm.role as "role: WorkspaceRole"
+        SELECT w.id, w.name, w.slug, w.description, w.owner_id, w.settings, w.created_at, w.updated_at, wm.role as "role: WorkspaceRole"
         FROM workspaces w
         JOIN workspace_members wm ON wm.workspace_id = w.id
         WHERE wm.user_id = $1
@@ -130,7 +131,8 @@ pub async fn list_workspaces(
 
     let workspaces = rows
         .into_iter()
-        .map(|(id, name, slug, description, owner_id, created_at, updated_at, role)| {
+        .map(|(id, name, slug, description, owner_id, settings_json, created_at, updated_at, role)| {
+            let settings: WorkspaceSettings = serde_json::from_value(settings_json).unwrap_or_default();
             WorkspaceWithRole {
                 workspace: Workspace {
                     id,
@@ -138,6 +140,7 @@ pub async fn list_workspaces(
                     slug,
                     description,
                     owner_id,
+                    settings,
                     created_at,
                     updated_at,
                 },
@@ -155,9 +158,9 @@ pub async fn get_workspace(
     Extension(user): Extension<AuthUser>,
     Path(workspace_id): Path<Uuid>,
 ) -> Result<Json<WorkspaceWithRole>, AppError> {
-    let row: Option<(Uuid, String, String, Option<String>, Uuid, chrono::DateTime<Utc>, chrono::DateTime<Utc>, WorkspaceRole)> = sqlx::query_as(
+    let row: Option<(Uuid, String, String, Option<String>, Uuid, serde_json::Value, chrono::DateTime<Utc>, chrono::DateTime<Utc>, WorkspaceRole)> = sqlx::query_as(
         r#"
-        SELECT w.id, w.name, w.slug, w.description, w.owner_id, w.created_at, w.updated_at, wm.role as "role: WorkspaceRole"
+        SELECT w.id, w.name, w.slug, w.description, w.owner_id, w.settings, w.created_at, w.updated_at, wm.role as "role: WorkspaceRole"
         FROM workspaces w
         JOIN workspace_members wm ON wm.workspace_id = w.id
         WHERE w.id = $1 AND wm.user_id = $2
@@ -168,8 +171,10 @@ pub async fn get_workspace(
     .fetch_optional(&state.db)
     .await?;
 
-    let (id, name, slug, description, owner_id, created_at, updated_at, role) =
+    let (id, name, slug, description, owner_id, settings_json, created_at, updated_at, role) =
         row.ok_or(AppError::NotFound)?;
+
+    let settings: WorkspaceSettings = serde_json::from_value(settings_json).unwrap_or_default();
 
     Ok(Json(WorkspaceWithRole {
         workspace: Workspace {
@@ -178,6 +183,7 @@ pub async fn get_workspace(
             slug,
             description,
             owner_id,
+            settings,
             created_at,
             updated_at,
         },
@@ -208,24 +214,29 @@ pub async fn update_workspace(
     }
 
     let now = Utc::now();
+    let settings_json = req.settings.as_ref().map(|s| serde_json::to_value(s).unwrap_or_default());
 
     // Build dynamic update query
-    let row: (Uuid, String, String, Option<String>, Uuid, chrono::DateTime<Utc>, chrono::DateTime<Utc>) = sqlx::query_as(
+    let row: (Uuid, String, String, Option<String>, Uuid, serde_json::Value, chrono::DateTime<Utc>, chrono::DateTime<Utc>) = sqlx::query_as(
         r#"
         UPDATE workspaces
         SET name = COALESCE($1, name),
             description = COALESCE($2, description),
-            updated_at = $3
-        WHERE id = $4
-        RETURNING id, name, slug, description, owner_id, created_at, updated_at
+            settings = COALESCE($3, settings),
+            updated_at = $4
+        WHERE id = $5
+        RETURNING id, name, slug, description, owner_id, settings, created_at, updated_at
         "#,
     )
     .bind(&req.name)
     .bind(&req.description)
+    .bind(&settings_json)
     .bind(now)
     .bind(workspace_id)
     .fetch_one(&state.db)
     .await?;
+
+    let settings: WorkspaceSettings = serde_json::from_value(row.5).unwrap_or_default();
 
     Ok(Json(Workspace {
         id: row.0,
@@ -233,8 +244,9 @@ pub async fn update_workspace(
         slug: row.2,
         description: row.3,
         owner_id: row.4,
-        created_at: row.5,
-        updated_at: row.6,
+        settings,
+        created_at: row.6,
+        updated_at: row.7,
     }))
 }
 
@@ -266,4 +278,56 @@ pub async fn delete_workspace(
         .await?;
 
     Ok(())
+}
+
+/// GET /api/v1/workspaces/:id/members
+pub async fn list_members(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path(workspace_id): Path<Uuid>,
+) -> Result<Json<Vec<WorkspaceMemberWithUser>>, AppError> {
+    // Check user has access to workspace
+    let access: Option<(WorkspaceRole,)> = sqlx::query_as(
+        r#"SELECT role as "role: WorkspaceRole" FROM workspace_members WHERE workspace_id = $1 AND user_id = $2"#,
+    )
+    .bind(workspace_id)
+    .bind(user.id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    if access.is_none() {
+        return Err(AppError::NotFound);
+    }
+
+    let rows: Vec<(Uuid, String, String, WorkspaceRole)> = sqlx::query_as(
+        r#"
+        SELECT u.id, u.display_name, u.email, wm.role as "role: WorkspaceRole"
+        FROM workspace_members wm
+        JOIN users u ON u.id = wm.user_id
+        WHERE wm.workspace_id = $1
+        ORDER BY
+            CASE wm.role
+                WHEN 'owner' THEN 1
+                WHEN 'admin' THEN 2
+                WHEN 'editor' THEN 3
+                WHEN 'reader' THEN 4
+            END,
+            u.display_name
+        "#,
+    )
+    .bind(workspace_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let members = rows
+        .into_iter()
+        .map(|(user_id, display_name, email, role)| WorkspaceMemberWithUser {
+            user_id,
+            display_name,
+            email,
+            role,
+        })
+        .collect();
+
+    Ok(Json(members))
 }

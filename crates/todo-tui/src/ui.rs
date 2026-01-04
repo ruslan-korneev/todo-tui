@@ -387,9 +387,23 @@ fn draw_kanban(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(Color::DarkGray)
         };
 
-        // Build multi-line task cards
+        // Calculate visible height (subtract 2 for borders)
+        let visible_height = column_chunks[i].height.saturating_sub(2) as usize;
+        let scroll_offset = app.column_scroll_offsets.get(i).copied().unwrap_or(0);
+
+        // Build multi-line task cards with scrolling
         let mut task_lines: Vec<Line> = Vec::new();
-        for (j, task) in column.tasks.iter().enumerate() {
+        let mut lines_used = 0;
+
+        for (j, task) in column.tasks.iter().enumerate().skip(scroll_offset) {
+            // Calculate lines this task will use
+            let task_height = if task.due_date.is_some() { 2 } else { 1 };
+
+            // Stop if we'd exceed visible area
+            if lines_used + task_height > visible_height {
+                break;
+            }
+
             let is_task_selected = is_selected && j == app.selected_task;
             let bg_style = if is_task_selected {
                 Style::default().bg(Color::DarkGray)
@@ -405,28 +419,46 @@ fn draw_kanban(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled(" ", bg_style),
                 Span::styled(&task.title, bg_style.fg(Color::White)),
             ]));
+            lines_used += 1;
 
             // Line 2: Due date (if set)
             if let Some(due_date) = task.due_date {
-                let date_str = due_date.format("%b %d").to_string();
-                task_lines.push(Line::from(vec![
-                    Span::styled("   ", bg_style),
-                    Span::styled("📅 ", bg_style.fg(Color::DarkGray)),
-                    Span::styled(date_str, bg_style.fg(Color::DarkGray)),
-                ]));
+                if lines_used < visible_height {
+                    let date_str = due_date.format("%b %d").to_string();
+                    task_lines.push(Line::from(vec![
+                        Span::styled("   ", bg_style),
+                        Span::styled("📅 ", bg_style.fg(Color::DarkGray)),
+                        Span::styled(date_str, bg_style.fg(Color::DarkGray)),
+                    ]));
+                    lines_used += 1;
+                }
             }
 
             // Empty line between cards (separator)
-            if j < column.tasks.len() - 1 {
+            if j < column.tasks.len() - 1 && lines_used < visible_height {
                 task_lines.push(Line::from(""));
+                lines_used += 1;
             }
         }
+
+        // Show scroll indicator if there are more tasks
+        let has_more_above = scroll_offset > 0;
+        let has_more_below = scroll_offset + lines_used / 2 < column.tasks.len().saturating_sub(1);
+        let scroll_indicator = if has_more_above && has_more_below {
+            " ↑↓"
+        } else if has_more_above {
+            " ↑"
+        } else if has_more_below {
+            " ↓"
+        } else {
+            ""
+        };
 
         let column_widget = Paragraph::new(task_lines).block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(border_style)
-                .title(format!(" {} ({}) ", column.status.name, column.tasks.len())),
+                .title(format!(" {} ({}){} ", column.status.name, column.tasks.len(), scroll_indicator)),
         );
 
         f.render_widget(column_widget, column_chunks[i]);
@@ -772,6 +804,7 @@ fn draw_task_edit_mode(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Length(3), // Priority
             Constraint::Length(3), // Due Date
             Constraint::Length(3), // Time Estimate
+            Constraint::Length(3), // Assignee
             Constraint::Min(0),    // Spacer
         ])
         .split(inner);
@@ -839,6 +872,23 @@ fn draw_task_edit_mode(f: &mut Frame, area: Rect, app: &App) {
     let time_text = Paragraph::new(app.edit_task_time_estimate_str.as_str()).block(time_block);
     f.render_widget(time_text, chunks[4]);
 
+    // Assignee field
+    let assignee_str = match app.edit_task_assignee {
+        Some(id) => app
+            .workspace_members
+            .iter()
+            .find(|m| m.user_id == id)
+            .map(|m| m.display_name.as_str())
+            .unwrap_or("Unknown"),
+        None => "(none)",
+    };
+    let assignee_block = Block::default()
+        .title(" Assignee (h/l to change) ")
+        .borders(Borders::ALL)
+        .border_style(field_style(TaskEditField::Assignee));
+    let assignee_text = Paragraph::new(assignee_str).block(assignee_block);
+    f.render_widget(assignee_text, chunks[5]);
+
     // Set cursor position if in insert mode
     if app.vim_mode == VimMode::Insert {
         let (cursor_x, cursor_y) = match app.edit_field {
@@ -859,6 +909,7 @@ fn draw_task_edit_mode(f: &mut Frame, area: Rect, app: &App) {
                 chunks[4].x + 1 + app.edit_task_time_estimate_str.len() as u16,
                 chunks[4].y + 1,
             ),
+            TaskEditField::Assignee => (chunks[5].x + 1, chunks[5].y + 1),
         };
         f.set_cursor_position((cursor_x, cursor_y));
     }

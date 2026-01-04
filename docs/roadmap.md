@@ -33,10 +33,10 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 - [x] Task statuses (kanban columns)
 - [x] Tasks table with all fields
 - [x] Comments table
-- [ ] Tags table
-- [ ] Documents table (ltree for hierarchy)
-- [ ] Full-text search indexes (pg_trgm)
-- [ ] Integration settings tables
+- [x] Tags table
+- [x] Documents table (ltree for hierarchy)
+- [x] Full-text search indexes (pg_trgm)
+- [x] Integration settings tables
 
 ### 1.4 Basic Backend (`crates/todo-server/`)
 - [x] Axum app skeleton with config

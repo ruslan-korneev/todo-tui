@@ -1,6 +1,8 @@
 use anyhow::Result;
+use chrono::NaiveDate;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use todo_shared::{Comment, Task, TaskStatus, Workspace, WorkspaceWithRole, User};
+use todo_shared::{Comment, Priority, Task, TaskStatus, Workspace, WorkspaceWithRole, User};
+use todo_shared::api::{CreateTaskRequest, UpdateTaskRequest};
 use tokio::sync::mpsc;
 
 use crate::api::ApiClient;
@@ -32,6 +34,21 @@ pub enum InputField {
     Email,
     Password,
     DisplayName,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewTaskField {
+    Title,
+    Description,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskEditField {
+    Title,
+    Description,
+    Priority,
+    DueDate,
+    TimeEstimate,
 }
 
 #[derive(Debug)]
@@ -90,6 +107,24 @@ pub struct App {
     pub task_comments: Vec<Comment>,
     pub adding_comment: bool,
     pub new_comment_content: String,
+
+    // Create task state
+    pub creating_task: bool,
+    pub new_task_title: String,
+    pub new_task_description: String,
+    pub new_task_field: NewTaskField,
+
+    // Delete task state
+    pub confirming_delete: bool,
+
+    // Edit task state
+    pub editing_task: bool,
+    pub edit_field: TaskEditField,
+    pub edit_task_title: String,
+    pub edit_task_description: String,
+    pub edit_task_priority: Option<Priority>,
+    pub edit_task_due_date_str: String,
+    pub edit_task_time_estimate_str: String,
 }
 
 pub struct Column {
@@ -132,6 +167,18 @@ impl App {
             task_comments: Vec::new(),
             adding_comment: false,
             new_comment_content: String::new(),
+            creating_task: false,
+            new_task_title: String::new(),
+            new_task_description: String::new(),
+            new_task_field: NewTaskField::Title,
+            confirming_delete: false,
+            editing_task: false,
+            edit_field: TaskEditField::Title,
+            edit_task_title: String::new(),
+            edit_task_description: String::new(),
+            edit_task_priority: None,
+            edit_task_due_date_str: String::new(),
+            edit_task_time_estimate_str: String::new(),
         }
     }
 
@@ -361,6 +408,58 @@ impl App {
         key: KeyEvent,
         _tx: mpsc::Sender<AppEvent>,
     ) -> Result<bool> {
+        // Handle create task popup
+        if self.creating_task {
+            match key.code {
+                KeyCode::Esc => {
+                    self.creating_task = false;
+                    self.new_task_title.clear();
+                    self.new_task_description.clear();
+                    self.new_task_field = NewTaskField::Title;
+                    self.vim_mode = VimMode::Normal;
+                }
+                KeyCode::Tab | KeyCode::BackTab => {
+                    self.new_task_field = match self.new_task_field {
+                        NewTaskField::Title => NewTaskField::Description,
+                        NewTaskField::Description => NewTaskField::Title,
+                    };
+                }
+                KeyCode::Enter => {
+                    if !self.new_task_title.is_empty() {
+                        self.do_create_task().await;
+                    }
+                }
+                KeyCode::Char(c) => {
+                    match self.new_task_field {
+                        NewTaskField::Title => self.new_task_title.push(c),
+                        NewTaskField::Description => self.new_task_description.push(c),
+                    }
+                }
+                KeyCode::Backspace => {
+                    match self.new_task_field {
+                        NewTaskField::Title => { self.new_task_title.pop(); }
+                        NewTaskField::Description => { self.new_task_description.pop(); }
+                    }
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
+        // Handle delete confirmation
+        if self.confirming_delete {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.do_delete_task().await;
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    self.confirming_delete = false;
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
         // Handle move mode
         if self.moving_task {
             match key.code {
@@ -391,6 +490,20 @@ impl App {
                     self.moving_task = true;
                 }
             }
+            KeyCode::Char('n') => {
+                // Create new task
+                if !self.columns.is_empty() {
+                    self.creating_task = true;
+                    self.new_task_field = NewTaskField::Title;
+                    self.vim_mode = VimMode::Insert;
+                }
+            }
+            KeyCode::Char('d') => {
+                // Delete task
+                if self.get_selected_task().is_some() {
+                    self.confirming_delete = true;
+                }
+            }
             KeyCode::Enter => {
                 self.open_task_detail().await;
             }
@@ -405,6 +518,11 @@ impl App {
         key: KeyEvent,
         _tx: mpsc::Sender<AppEvent>,
     ) -> Result<bool> {
+        // Handle edit mode
+        if self.editing_task {
+            return self.handle_edit_task_key(key).await;
+        }
+
         // Handle comment input mode
         if self.adding_comment {
             match key.code {
@@ -438,11 +556,112 @@ impl App {
                 self.adding_comment = true;
                 self.vim_mode = VimMode::Insert;
             }
+            KeyCode::Char('e') => {
+                // Enter edit mode
+                self.enter_edit_mode();
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 // Scroll comments down (future enhancement)
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 // Scroll comments up (future enhancement)
+            }
+            _ => {}
+        }
+
+        Ok(false)
+    }
+
+    async fn handle_edit_task_key(&mut self, key: KeyEvent) -> Result<bool> {
+        // Insert mode - editing current field
+        if self.vim_mode == VimMode::Insert {
+            match key.code {
+                KeyCode::Esc => {
+                    self.vim_mode = VimMode::Normal;
+                }
+                KeyCode::Enter => {
+                    // Save and exit insert mode
+                    self.vim_mode = VimMode::Normal;
+                }
+                KeyCode::Char(c) => {
+                    match self.edit_field {
+                        TaskEditField::Title => self.edit_task_title.push(c),
+                        TaskEditField::Description => self.edit_task_description.push(c),
+                        TaskEditField::DueDate => self.edit_task_due_date_str.push(c),
+                        TaskEditField::TimeEstimate => self.edit_task_time_estimate_str.push(c),
+                        TaskEditField::Priority => {} // Priority uses h/l, not text input
+                    }
+                }
+                KeyCode::Backspace => {
+                    match self.edit_field {
+                        TaskEditField::Title => { self.edit_task_title.pop(); }
+                        TaskEditField::Description => { self.edit_task_description.pop(); }
+                        TaskEditField::DueDate => { self.edit_task_due_date_str.pop(); }
+                        TaskEditField::TimeEstimate => { self.edit_task_time_estimate_str.pop(); }
+                        TaskEditField::Priority => {}
+                    }
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
+        // Normal mode in edit
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                // Cancel edit mode
+                self.editing_task = false;
+                self.vim_mode = VimMode::Normal;
+            }
+            KeyCode::Char('i') => {
+                // Enter insert mode for current field (except Priority)
+                if self.edit_field != TaskEditField::Priority {
+                    self.vim_mode = VimMode::Insert;
+                }
+            }
+            KeyCode::Tab | KeyCode::Char('j') | KeyCode::Down => {
+                // Next field
+                self.edit_field = match self.edit_field {
+                    TaskEditField::Title => TaskEditField::Description,
+                    TaskEditField::Description => TaskEditField::Priority,
+                    TaskEditField::Priority => TaskEditField::DueDate,
+                    TaskEditField::DueDate => TaskEditField::TimeEstimate,
+                    TaskEditField::TimeEstimate => TaskEditField::Title,
+                };
+            }
+            KeyCode::BackTab | KeyCode::Char('k') | KeyCode::Up => {
+                // Previous field
+                self.edit_field = match self.edit_field {
+                    TaskEditField::Title => TaskEditField::TimeEstimate,
+                    TaskEditField::Description => TaskEditField::Title,
+                    TaskEditField::Priority => TaskEditField::Description,
+                    TaskEditField::DueDate => TaskEditField::Priority,
+                    TaskEditField::TimeEstimate => TaskEditField::DueDate,
+                };
+            }
+            KeyCode::Char('h') | KeyCode::Left if self.edit_field == TaskEditField::Priority => {
+                // Decrease priority
+                self.edit_task_priority = Some(match self.edit_task_priority {
+                    Some(Priority::Highest) => Priority::High,
+                    Some(Priority::High) => Priority::Medium,
+                    Some(Priority::Medium) => Priority::Low,
+                    Some(Priority::Low) => Priority::Lowest,
+                    Some(Priority::Lowest) | None => Priority::Lowest,
+                });
+            }
+            KeyCode::Char('l') | KeyCode::Right if self.edit_field == TaskEditField::Priority => {
+                // Increase priority
+                self.edit_task_priority = Some(match self.edit_task_priority {
+                    Some(Priority::Lowest) => Priority::Low,
+                    Some(Priority::Low) => Priority::Medium,
+                    Some(Priority::Medium) => Priority::High,
+                    Some(Priority::High) => Priority::Highest,
+                    Some(Priority::Highest) | None => Priority::Highest,
+                });
+            }
+            KeyCode::Enter => {
+                // Save changes
+                self.do_update_task().await;
             }
             _ => {}
         }
@@ -778,5 +997,170 @@ impl App {
                 self.set_error(format!("Failed to add comment: {}", e));
             }
         }
+    }
+
+    async fn do_create_task(&mut self) {
+        let workspace_id = match self.current_workspace {
+            Some(ref ws) => ws.id,
+            None => return,
+        };
+
+        // Use currently selected column's status
+        let status_id = match self.columns.get(self.selected_column) {
+            Some(col) => col.status.id,
+            None => return,
+        };
+
+        let req = CreateTaskRequest {
+            title: self.new_task_title.clone(),
+            status_id,
+            description: if self.new_task_description.is_empty() {
+                None
+            } else {
+                Some(self.new_task_description.clone())
+            },
+            priority: None,
+            due_date: None,
+            time_estimate_minutes: None,
+            assigned_to: None,
+        };
+
+        self.set_loading(true, "Creating task...");
+
+        match self.api.create_task(workspace_id, req).await {
+            Ok(task) => {
+                // Add to current column
+                if let Some(col) = self.columns.get_mut(self.selected_column) {
+                    col.tasks.push(task);
+                    col.tasks.sort_by_key(|t| t.position);
+                    // Select the new task
+                    self.selected_task = col.tasks.len().saturating_sub(1);
+                }
+                // Clear form
+                self.creating_task = false;
+                self.new_task_title.clear();
+                self.new_task_description.clear();
+                self.new_task_field = NewTaskField::Title;
+                self.vim_mode = VimMode::Normal;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to create task: {}", e));
+            }
+        }
+
+        self.set_loading(false, "");
+    }
+
+    async fn do_delete_task(&mut self) {
+        let workspace_id = match self.current_workspace {
+            Some(ref ws) => ws.id,
+            None => return,
+        };
+
+        let task = match self.get_selected_task() {
+            Some(t) => t.clone(),
+            None => return,
+        };
+
+        self.set_loading(true, "Deleting task...");
+
+        match self.api.delete_task(workspace_id, task.id).await {
+            Ok(()) => {
+                // Remove from current column
+                if let Some(col) = self.columns.get_mut(self.selected_column) {
+                    col.tasks.retain(|t| t.id != task.id);
+                    // Adjust selection if needed
+                    if self.selected_task >= col.tasks.len() && !col.tasks.is_empty() {
+                        self.selected_task = col.tasks.len() - 1;
+                    }
+                }
+                self.confirming_delete = false;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to delete task: {}", e));
+            }
+        }
+
+        self.set_loading(false, "");
+    }
+
+    fn enter_edit_mode(&mut self) {
+        if let Some(ref task) = self.selected_task_detail {
+            self.editing_task = true;
+            self.edit_field = TaskEditField::Title;
+            self.edit_task_title = task.title.clone();
+            self.edit_task_description = task.description.clone().unwrap_or_default();
+            self.edit_task_priority = task.priority;
+            self.edit_task_due_date_str = task.due_date.map(|d| d.to_string()).unwrap_or_default();
+            self.edit_task_time_estimate_str = task.time_estimate_minutes
+                .map(|m| m.to_string())
+                .unwrap_or_default();
+        }
+    }
+
+    async fn do_update_task(&mut self) {
+        let workspace_id = match self.current_workspace {
+            Some(ref ws) => ws.id,
+            None => return,
+        };
+
+        let task_id = match self.selected_task_detail {
+            Some(ref t) => t.id,
+            None => return,
+        };
+
+        // Parse due date
+        let due_date = if self.edit_task_due_date_str.is_empty() {
+            None
+        } else {
+            NaiveDate::parse_from_str(&self.edit_task_due_date_str, "%Y-%m-%d").ok()
+        };
+
+        // Parse time estimate
+        let time_estimate_minutes = if self.edit_task_time_estimate_str.is_empty() {
+            None
+        } else {
+            self.edit_task_time_estimate_str.parse::<i32>().ok()
+        };
+
+        let req = UpdateTaskRequest {
+            title: Some(self.edit_task_title.clone()),
+            status_id: None,
+            description: Some(if self.edit_task_description.is_empty() {
+                None
+            } else {
+                Some(self.edit_task_description.clone())
+            }).flatten(),
+            priority: self.edit_task_priority,
+            due_date,
+            time_estimate_minutes,
+            assigned_to: None,
+        };
+
+        self.set_loading(true, "Updating task...");
+
+        match self.api.update_task(workspace_id, task_id, req).await {
+            Ok(updated_task) => {
+                // Update the task detail
+                self.selected_task_detail = Some(updated_task.clone());
+
+                // Update in columns
+                for col in &mut self.columns {
+                    for task in &mut col.tasks {
+                        if task.id == task_id {
+                            *task = updated_task.clone();
+                        }
+                    }
+                }
+
+                self.editing_task = false;
+                self.vim_mode = VimMode::Normal;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to update task: {}", e));
+            }
+        }
+
+        self.set_loading(false, "");
     }
 }

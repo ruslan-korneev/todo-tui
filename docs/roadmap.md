@@ -74,14 +74,16 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 - [x] Vim navigation (h/j/k/l)
 - [x] Task selection highlighting
 - [x] Move task between columns (m + h/l)
+- [x] Create task (n key)
+- [x] Delete task (d key)
 - [ ] Scroll within columns
 
 ### 2.3 Task Detail
 - [x] TaskDetail side panel
-- [ ] Title/description editor
-- [ ] Priority selector (lowest/low/medium/high/highest)
-- [ ] Due date picker
-- [ ] Time estimate input
+- [x] Title/description editor
+- [x] Priority selector (lowest/low/medium/high/highest)
+- [x] Due date picker
+- [x] Time estimate input
 - [ ] Assignee selector
 
 ### 2.4 Comments

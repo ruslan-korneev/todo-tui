@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AuthMode, InputField, View, VimMode};
+use crate::app::{App, AuthMode, InputField, NewTaskField, TaskEditField, View, VimMode};
 
 pub fn draw(f: &mut Frame, app: &App) {
     // Draw based on current view
@@ -311,6 +311,16 @@ fn draw_dashboard(f: &mut Frame, app: &App) {
     draw_header(f, chunks[0], app);
     draw_kanban(f, chunks[1], app);
     draw_status_bar(f, chunks[2], app);
+
+    // Draw create task popup if active
+    if app.creating_task {
+        draw_create_task_popup(f, app);
+    }
+
+    // Draw delete confirmation popup if active
+    if app.confirming_delete {
+        draw_delete_confirm_popup(f, app);
+    }
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
@@ -393,6 +403,10 @@ fn draw_kanban(f: &mut Frame, area: Rect, app: &App) {
 fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
     let (mode, mode_color) = if app.moving_task {
         ("MOVE", Color::Magenta)
+    } else if app.creating_task {
+        ("CREATE", Color::Green)
+    } else if app.confirming_delete {
+        ("DELETE", Color::Red)
     } else {
         match app.vim_mode {
             VimMode::Normal => ("NORMAL", Color::Blue),
@@ -402,8 +416,12 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
 
     let hints = if app.moving_task {
         "h/l: move task | Esc: cancel"
+    } else if app.creating_task {
+        "Tab: next field | Enter: create | Esc: cancel"
+    } else if app.confirming_delete {
+        "y: confirm | n/Esc: cancel"
     } else {
-        "Backspace: back | h/l: columns | j/k: tasks | m: move | Enter: details | q: quit"
+        "n: new | d: delete | m: move | Enter: details | q: quit"
     };
 
     let status = Paragraph::new(Line::from(vec![
@@ -416,6 +434,122 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
     ]));
 
     f.render_widget(status, area);
+}
+
+fn draw_create_task_popup(f: &mut Frame, app: &App) {
+    let area = centered_rect(60, 30, f.area());
+
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" New Task ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(3), // Title
+            Constraint::Length(5), // Description
+            Constraint::Length(2), // Hint
+            Constraint::Min(0),    // Spacer
+        ])
+        .split(inner);
+
+    // Title field
+    let title_style = if app.new_task_field == NewTaskField::Title {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let title_block = Block::default()
+        .title(" Title ")
+        .borders(Borders::ALL)
+        .border_style(title_style);
+    let title_text = Paragraph::new(app.new_task_title.as_str()).block(title_block);
+    f.render_widget(title_text, chunks[0]);
+
+    // Description field
+    let desc_style = if app.new_task_field == NewTaskField::Description {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let desc_block = Block::default()
+        .title(" Description (optional) ")
+        .borders(Borders::ALL)
+        .border_style(desc_style);
+    let desc_text = Paragraph::new(app.new_task_description.as_str())
+        .block(desc_block)
+        .wrap(Wrap { trim: false });
+    f.render_widget(desc_text, chunks[1]);
+
+    // Hint
+    let hint = Paragraph::new("Tab: switch field | Enter: create | Esc: cancel")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    f.render_widget(hint, chunks[2]);
+
+    // Set cursor position
+    let (cursor_x, cursor_y) = match app.new_task_field {
+        NewTaskField::Title => (
+            chunks[0].x + 1 + app.new_task_title.len() as u16,
+            chunks[0].y + 1,
+        ),
+        NewTaskField::Description => (
+            chunks[1].x + 1 + app.new_task_description.len() as u16,
+            chunks[1].y + 1,
+        ),
+    };
+    f.set_cursor_position((cursor_x, cursor_y));
+}
+
+fn draw_delete_confirm_popup(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 20, f.area());
+
+    f.render_widget(Clear, area);
+
+    let task_title = app
+        .get_selected_task()
+        .map(|t| t.title.as_str())
+        .unwrap_or("Unknown");
+
+    let block = Block::default()
+        .title(" Confirm Delete ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(2), // Message
+            Constraint::Length(2), // Hint
+            Constraint::Min(0),    // Spacer
+        ])
+        .split(inner);
+
+    let message = Paragraph::new(vec![
+        Line::from(Span::raw("Delete task:")),
+        Line::from(Span::styled(
+            format!("\"{}\"", task_title),
+            Style::default().fg(Color::Yellow),
+        )),
+    ])
+    .alignment(Alignment::Center);
+    f.render_widget(message, chunks[0]);
+
+    let hint = Paragraph::new("y: yes, delete | n: no, cancel")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    f.render_widget(hint, chunks[1]);
 }
 
 fn draw_task_detail(f: &mut Frame, app: &App) {
@@ -436,6 +570,18 @@ fn draw_task_detail(f: &mut Frame, app: &App) {
     // Header
     draw_header(f, chunks[0], app);
 
+    // Check if in edit mode
+    if app.editing_task {
+        draw_task_edit_mode(f, chunks[1], app);
+    } else {
+        draw_task_view_mode(f, chunks[1], app, task);
+    }
+
+    // Status bar
+    draw_task_detail_status_bar(f, chunks[2], app);
+}
+
+fn draw_task_view_mode(f: &mut Frame, area: Rect, app: &App, task: &todo_shared::Task) {
     // Main content: split into task info and comments
     let content_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -443,7 +589,7 @@ fn draw_task_detail(f: &mut Frame, app: &App) {
             Constraint::Percentage(50), // Task details
             Constraint::Percentage(50), // Comments
         ])
-        .split(chunks[1]);
+        .split(area);
 
     // Task details panel
     let mut task_lines = vec![
@@ -573,21 +719,138 @@ fn draw_task_detail(f: &mut Frame, app: &App) {
             inner_chunks[1].y + 1,
         ));
     }
+}
 
-    // Status bar
-    draw_task_detail_status_bar(f, chunks[2], app);
+fn draw_task_edit_mode(f: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .title(" Edit Task ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(3), // Title
+            Constraint::Length(5), // Description
+            Constraint::Length(3), // Priority
+            Constraint::Length(3), // Due Date
+            Constraint::Length(3), // Time Estimate
+            Constraint::Min(0),    // Spacer
+        ])
+        .split(inner);
+
+    // Helper to get field style
+    let field_style = |field: TaskEditField| -> Style {
+        if app.edit_field == field {
+            if app.vim_mode == VimMode::Insert {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::Yellow)
+            }
+        } else {
+            Style::default().fg(Color::Gray)
+        }
+    };
+
+    // Title field
+    let title_block = Block::default()
+        .title(" Title ")
+        .borders(Borders::ALL)
+        .border_style(field_style(TaskEditField::Title));
+    let title_text = Paragraph::new(app.edit_task_title.as_str()).block(title_block);
+    f.render_widget(title_text, chunks[0]);
+
+    // Description field
+    let desc_block = Block::default()
+        .title(" Description ")
+        .borders(Borders::ALL)
+        .border_style(field_style(TaskEditField::Description));
+    let desc_text = Paragraph::new(app.edit_task_description.as_str())
+        .block(desc_block)
+        .wrap(Wrap { trim: false });
+    f.render_widget(desc_text, chunks[1]);
+
+    // Priority field
+    let priority_str = match app.edit_task_priority {
+        Some(todo_shared::Priority::Highest) => "Highest",
+        Some(todo_shared::Priority::High) => "High",
+        Some(todo_shared::Priority::Medium) => "Medium",
+        Some(todo_shared::Priority::Low) => "Low",
+        Some(todo_shared::Priority::Lowest) => "Lowest",
+        None => "(none)",
+    };
+    let priority_block = Block::default()
+        .title(" Priority (h/l to change) ")
+        .borders(Borders::ALL)
+        .border_style(field_style(TaskEditField::Priority));
+    let priority_text = Paragraph::new(priority_str).block(priority_block);
+    f.render_widget(priority_text, chunks[2]);
+
+    // Due Date field
+    let due_date_block = Block::default()
+        .title(" Due Date (YYYY-MM-DD) ")
+        .borders(Borders::ALL)
+        .border_style(field_style(TaskEditField::DueDate));
+    let due_date_text = Paragraph::new(app.edit_task_due_date_str.as_str()).block(due_date_block);
+    f.render_widget(due_date_text, chunks[3]);
+
+    // Time Estimate field
+    let time_block = Block::default()
+        .title(" Time Estimate (minutes) ")
+        .borders(Borders::ALL)
+        .border_style(field_style(TaskEditField::TimeEstimate));
+    let time_text = Paragraph::new(app.edit_task_time_estimate_str.as_str()).block(time_block);
+    f.render_widget(time_text, chunks[4]);
+
+    // Set cursor position if in insert mode
+    if app.vim_mode == VimMode::Insert {
+        let (cursor_x, cursor_y) = match app.edit_field {
+            TaskEditField::Title => (
+                chunks[0].x + 1 + app.edit_task_title.len() as u16,
+                chunks[0].y + 1,
+            ),
+            TaskEditField::Description => (
+                chunks[1].x + 1 + app.edit_task_description.len() as u16,
+                chunks[1].y + 1,
+            ),
+            TaskEditField::Priority => (chunks[2].x + 1, chunks[2].y + 1),
+            TaskEditField::DueDate => (
+                chunks[3].x + 1 + app.edit_task_due_date_str.len() as u16,
+                chunks[3].y + 1,
+            ),
+            TaskEditField::TimeEstimate => (
+                chunks[4].x + 1 + app.edit_task_time_estimate_str.len() as u16,
+                chunks[4].y + 1,
+            ),
+        };
+        f.set_cursor_position((cursor_x, cursor_y));
+    }
 }
 
 fn draw_task_detail_status_bar(f: &mut Frame, area: Rect, app: &App) {
-    let (mode, mode_color) = match app.vim_mode {
-        VimMode::Normal => ("NORMAL", Color::Blue),
-        VimMode::Insert => ("INSERT", Color::Green),
+    let (mode, mode_color) = if app.editing_task {
+        ("EDIT", Color::Yellow)
+    } else {
+        match app.vim_mode {
+            VimMode::Normal => ("NORMAL", Color::Blue),
+            VimMode::Insert => ("INSERT", Color::Green),
+        }
     };
 
-    let hints = if app.adding_comment {
+    let hints = if app.editing_task {
+        if app.vim_mode == VimMode::Insert {
+            "Type to edit | Esc: normal mode"
+        } else {
+            "j/k: fields | i: edit | h/l: priority | Enter: save | q: cancel"
+        }
+    } else if app.adding_comment {
         "Type comment | Enter: submit | Esc: cancel"
     } else {
-        "a: add comment | q/Esc: back to kanban"
+        "e: edit | a: comment | q/Esc: back"
     };
 
     let status = Paragraph::new(Line::from(vec![

@@ -1196,6 +1196,35 @@ fn draw_search_popup(f: &mut Frame, app: &App) {
 
                     ListItem::new(Line::from(spans))
                 }
+                SearchResultItem::Document(doc_result) => {
+                    // Build the line with document icon and highlighted title
+                    let mut spans = vec![
+                        Span::styled("  ", style),
+                        Span::styled("[D]", style.fg(Color::Cyan)),
+                        Span::styled(" ", style),
+                    ];
+
+                    // Parse title with highlight markers
+                    let title_text = doc_result
+                        .title_highlights
+                        .as_deref()
+                        .unwrap_or(&doc_result.document.title);
+                    spans.extend(parse_highlights_to_spans(title_text, style));
+
+                    // Add path breadcrumb
+                    spans.push(Span::styled(
+                        format!(" ({})", doc_result.document.path),
+                        style.fg(Color::DarkGray),
+                    ));
+
+                    // Add rank score
+                    spans.push(Span::styled(
+                        format!(" [{:.2}]", doc_result.rank),
+                        style.fg(Color::DarkGray),
+                    ));
+
+                    ListItem::new(Line::from(spans))
+                }
             }
         })
         .collect();
@@ -1634,6 +1663,13 @@ fn draw_task_detail(f: &mut Frame, app: &App) {
 
     // Status bar
     draw_task_detail_status_bar(f, chunks[2], app);
+
+    // Draw link/unlink document popup if active
+    if app.linking_document_mode {
+        draw_link_document_popup(f, app);
+    } else if app.unlinking_document_mode {
+        draw_unlink_document_popup(f, app);
+    }
 }
 
 fn draw_task_view_mode(f: &mut Frame, area: Rect, app: &App, task: &todo_shared::Task) {
@@ -1710,6 +1746,26 @@ fn draw_task_view_mode(f: &mut Frame, area: Rect, app: &App, task: &todo_shared:
         Span::styled("Created: ", Style::default().fg(Color::Cyan)),
         Span::raw(task.created_at.format("%Y-%m-%d %H:%M").to_string()),
     ]));
+
+    // Linked Documents section
+    task_lines.push(Line::from(""));
+    task_lines.push(Line::from(Span::styled(
+        format!("Linked Documents ({}):", app.task_linked_documents.len()),
+        Style::default().fg(Color::Cyan),
+    )));
+    if app.task_linked_documents.is_empty() {
+        task_lines.push(Line::from(Span::styled(
+            "  (none)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for doc in &app.task_linked_documents {
+            task_lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(&doc.document_title, Style::default().fg(Color::Yellow)),
+            ]));
+        }
+    }
 
     let task_details = Paragraph::new(task_lines)
         .block(
@@ -1991,8 +2047,12 @@ fn draw_task_detail_status_bar(f: &mut Frame, area: Rect, app: &App) {
         }
     } else if app.adding_comment {
         "Type comment | Enter: submit | Esc: cancel"
+    } else if app.linking_document_mode {
+        "j/k: navigate | Enter: link | Esc: cancel"
+    } else if app.unlinking_document_mode {
+        "j/k: navigate | Enter: unlink | Esc: cancel"
     } else {
-        "e: edit | a: comment | q/Esc: back"
+        "e: edit | a: comment | L: link doc | U: unlink doc | q/Esc: back"
     };
 
     let status = Paragraph::new(Line::from(vec![
@@ -2005,6 +2065,83 @@ fn draw_task_detail_status_bar(f: &mut Frame, area: Rect, app: &App) {
     ]));
 
     f.render_widget(status, area);
+}
+
+fn draw_link_document_popup(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 50, f.area());
+
+    // Clear the background
+    f.render_widget(Clear, area);
+
+    // Get available documents (not already linked)
+    let linked_ids: std::collections::HashSet<_> = app.task_linked_documents
+        .iter()
+        .map(|d| d.document_id)
+        .collect();
+
+    let available: Vec<_> = app.kb_documents
+        .iter()
+        .filter(|d| !linked_ids.contains(&d.id))
+        .collect();
+
+    let items: Vec<ListItem> = available
+        .iter()
+        .enumerate()
+        .map(|(i, doc)| {
+            let style = if i == app.link_document_cursor {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(&doc.title, style),
+                Span::styled(format!(" ({})", doc.path), style.fg(Color::DarkGray)),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" Link Document (j/k: navigate, Enter: select, Esc: cancel) ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        );
+
+    f.render_widget(list, area);
+}
+
+fn draw_unlink_document_popup(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 50, f.area());
+
+    // Clear the background
+    f.render_widget(Clear, area);
+
+    let items: Vec<ListItem> = app.task_linked_documents
+        .iter()
+        .enumerate()
+        .map(|(i, doc)| {
+            let style = if i == app.unlink_document_cursor {
+                Style::default().bg(Color::Red).fg(Color::White)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(&doc.document_title, style),
+                Span::styled(format!(" ({})", doc.document_path), style.fg(Color::DarkGray)),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" Unlink Document (j/k: navigate, Enter: unlink, Esc: cancel) ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red)),
+        );
+
+    f.render_widget(list, area);
 }
 
 fn draw_loading(f: &mut Frame, message: &str) {
@@ -2410,6 +2547,11 @@ fn draw_knowledge_base(f: &mut Frame, app: &App) {
     if app.kb_confirming_delete {
         draw_kb_delete_confirm_popup(f, app);
     }
+
+    // Draw link task popup if active
+    if app.linking_task_mode {
+        draw_link_task_popup(f, app);
+    }
 }
 
 fn draw_document_tree(f: &mut Frame, area: Rect, app: &App) {
@@ -2488,11 +2630,19 @@ fn draw_document_content(f: &mut Frame, area: Rect, app: &App) {
 
     match &app.kb_selected_doc {
         Some(doc) => {
+            // Calculate linked tasks height (header + items or empty message)
+            let linked_tasks_height = if app.kb_linked_tasks.is_empty() {
+                3 // Header + "(none)" + padding
+            } else {
+                (2 + app.kb_linked_tasks.len().min(5)) as u16 // Header + up to 5 tasks
+            };
+
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(2), // Title
-                    Constraint::Min(0),    // Content
+                    Constraint::Length(2),                    // Title
+                    Constraint::Min(3),                       // Content
+                    Constraint::Length(linked_tasks_height),  // Linked Tasks
                 ])
                 .split(inner);
 
@@ -2525,6 +2675,35 @@ fn draw_document_content(f: &mut Frame, area: Rect, app: &App) {
                     Color::DarkGray
                 }));
             f.render_widget(content, chunks[1]);
+
+            // Linked Tasks section
+            let mut linked_lines = vec![
+                Line::from(Span::styled(
+                    format!("Linked Tasks ({}):", app.kb_linked_tasks.len()),
+                    Style::default().fg(Color::Cyan),
+                )),
+            ];
+            if app.kb_linked_tasks.is_empty() {
+                linked_lines.push(Line::from(Span::styled(
+                    "  (none)",
+                    Style::default().fg(Color::DarkGray),
+                )));
+            } else {
+                for task in app.kb_linked_tasks.iter().take(5) {
+                    linked_lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(&task.task_title, Style::default().fg(Color::Green)),
+                    ]));
+                }
+                if app.kb_linked_tasks.len() > 5 {
+                    linked_lines.push(Line::from(Span::styled(
+                        format!("  ... and {} more", app.kb_linked_tasks.len() - 5),
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
+            }
+            let linked_tasks = Paragraph::new(linked_lines);
+            f.render_widget(linked_tasks, chunks[2]);
         }
         None => {
             let empty = Paragraph::new("Select a document to view its content")
@@ -2585,6 +2764,8 @@ fn draw_kb_status_bar(f: &mut Frame, area: Rect, app: &App) {
         ("CREATE", Color::Green)
     } else if app.kb_confirming_delete {
         ("DELETE", Color::Red)
+    } else if app.linking_task_mode {
+        ("LINK", Color::Cyan)
     } else {
         ("NORMAL", Color::Blue)
     };
@@ -2595,8 +2776,10 @@ fn draw_kb_status_bar(f: &mut Frame, area: Rect, app: &App) {
         "Enter: create | Esc: cancel"
     } else if app.kb_confirming_delete {
         "y: confirm | n/Esc: cancel"
+    } else if app.linking_task_mode {
+        "j/k: navigate | Enter: link | Esc: cancel"
     } else {
-        "j/k: nav | l: expand | n: new (child if expanded) | e: edit | d: del | q: close"
+        "j/k: nav | n: new | e: edit | d: del | L: link task | U: unlink | q: close"
     };
 
     let status = Paragraph::new(Line::from(vec![
@@ -2719,6 +2902,49 @@ fn draw_kb_delete_confirm_popup(f: &mut Frame, app: &App) {
     f.render_widget(hint, chunks[1]);
 }
 
+fn draw_link_task_popup(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 50, f.area());
+
+    // Clear the background
+    f.render_widget(Clear, area);
+
+    // Get available tasks (not already linked)
+    let linked_ids: std::collections::HashSet<_> = app.kb_linked_tasks
+        .iter()
+        .map(|t| t.task_id)
+        .collect();
+
+    // Get all tasks from columns
+    let all_tasks: Vec<_> = app.columns.iter().flat_map(|c| c.tasks.iter()).collect();
+    let available: Vec<_> = all_tasks
+        .iter()
+        .filter(|t| !linked_ids.contains(&t.id))
+        .collect();
+
+    let items: Vec<ListItem> = available
+        .iter()
+        .enumerate()
+        .map(|(i, task)| {
+            let style = if i == app.link_task_cursor {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(Span::styled(&task.title, style)))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" Link Task (j/k: navigate, Enter: select, Esc: cancel) ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        );
+
+    f.render_widget(list, area);
+}
+
 fn draw_help(f: &mut Frame, app: &App) {
     let area = centered_rect(60, 80, f.area());
     f.render_widget(Clear, area);
@@ -2781,6 +3007,14 @@ fn draw_help(f: &mut Frame, app: &App) {
             Span::styled("  a       ", Style::default().fg(Color::Green)),
             Span::raw("Add comment (in detail view)"),
         ]),
+        Line::from(vec![
+            Span::styled("  L       ", Style::default().fg(Color::Green)),
+            Span::raw("Link document (in detail view)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  U       ", Style::default().fg(Color::Green)),
+            Span::raw("Unlink document (in detail view)"),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             "SEARCH & FILTER",
@@ -2830,6 +3064,41 @@ fn draw_help(f: &mut Frame, app: &App) {
         Line::from(vec![
             Span::styled("  Ctrl+W  ", Style::default().fg(Color::Green)),
             Span::raw("Workspace switch"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "KNOWLEDGE BASE",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::styled("  j/k     ", Style::default().fg(Color::Green)),
+            Span::raw("Navigate documents"),
+        ]),
+        Line::from(vec![
+            Span::styled("  h/l     ", Style::default().fg(Color::Green)),
+            Span::raw("Collapse/expand"),
+        ]),
+        Line::from(vec![
+            Span::styled("  n       ", Style::default().fg(Color::Green)),
+            Span::raw("New document"),
+        ]),
+        Line::from(vec![
+            Span::styled("  e       ", Style::default().fg(Color::Green)),
+            Span::raw("Edit document"),
+        ]),
+        Line::from(vec![
+            Span::styled("  d       ", Style::default().fg(Color::Green)),
+            Span::raw("Delete document"),
+        ]),
+        Line::from(vec![
+            Span::styled("  L       ", Style::default().fg(Color::Green)),
+            Span::raw("Link task to document"),
+        ]),
+        Line::from(vec![
+            Span::styled("  U       ", Style::default().fg(Color::Green)),
+            Span::raw("Unlink task from document"),
         ]),
         Line::from(""),
         Line::from(Span::styled(

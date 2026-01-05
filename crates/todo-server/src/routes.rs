@@ -104,7 +104,20 @@ pub fn create_router(db: DbPool, config: Config) -> Router {
         .route("/:doc_id", get(document_handlers::get_document))
         .route("/:doc_id", patch(document_handlers::update_document))
         .route("/:doc_id", delete(document_handlers::delete_document))
-        .route("/:doc_id/move", post(document_handlers::move_document));
+        .route("/:doc_id/move", post(document_handlers::move_document))
+        // Task-Document linking
+        .route(
+            "/:doc_id/tasks",
+            get(document_handlers::list_linked_tasks).post(document_handlers::link_task),
+        )
+        .route(
+            "/:doc_id/tasks/:task_id",
+            delete(document_handlers::unlink_task),
+        );
+
+    // Task linked documents route
+    let task_documents_route = Router::new()
+        .route("/", get(document_handlers::list_linked_documents));
 
     // Protected routes with auth middleware
     let protected_routes = Router::new()
@@ -113,6 +126,10 @@ pub fn create_router(db: DbPool, config: Config) -> Router {
         .nest("/workspaces/:id/tasks", task_routes)
         .nest("/workspaces/:id/tasks/:task_id/comments", comment_routes)
         .nest("/workspaces/:id/tasks/:task_id/tags", task_tag_routes)
+        .nest(
+            "/workspaces/:id/tasks/:task_id/documents",
+            task_documents_route,
+        )
         .nest("/workspaces/:id/tags", tag_routes)
         .nest("/workspaces/:id/documents", document_routes)
         .nest("/workspaces/:id/search", search_routes)

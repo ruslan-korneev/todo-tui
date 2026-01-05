@@ -298,6 +298,16 @@ pub struct App {
     pub kb_create_parent_id: Option<uuid::Uuid>,
     pub kb_confirming_delete: bool,
 
+    // Task-Document linking state
+    pub task_linked_documents: Vec<todo_shared::api::LinkedDocument>,
+    pub kb_linked_tasks: Vec<todo_shared::api::LinkedTask>,
+    pub linking_document_mode: bool,
+    pub link_document_cursor: usize,
+    pub unlinking_document_mode: bool,
+    pub unlink_document_cursor: usize,
+    pub linking_task_mode: bool,
+    pub link_task_cursor: usize,
+
     // Menu state
     pub menu_visible: bool,
     pub menu_selected_idx: usize,
@@ -425,6 +435,15 @@ impl App {
             kb_create_title: String::new(),
             kb_create_parent_id: None,
             kb_confirming_delete: false,
+
+            task_linked_documents: Vec::new(),
+            kb_linked_tasks: Vec::new(),
+            linking_document_mode: false,
+            link_document_cursor: 0,
+            unlinking_document_mode: false,
+            unlink_document_cursor: 0,
+            linking_task_mode: false,
+            link_task_cursor: 0,
 
             menu_visible: false,
             menu_selected_idx: 0,
@@ -1014,14 +1033,25 @@ impl App {
             }
             KeyCode::Enter => {
                 // Navigate to selected result
-                if let Some(SearchResultItem::Task(task_result)) =
-                    self.search_results.get(self.search_selected)
-                {
-                    self.select_task_by_id(task_result.task.id);
-                    self.searching = false;
-                    self.search_query.clear();
-                    self.search_results.clear();
-                    self.vim_mode = VimMode::Normal;
+                match self.search_results.get(self.search_selected) {
+                    Some(SearchResultItem::Task(task_result)) => {
+                        self.select_task_by_id(task_result.task.id);
+                        self.searching = false;
+                        self.search_query.clear();
+                        self.search_results.clear();
+                        self.vim_mode = VimMode::Normal;
+                    }
+                    Some(SearchResultItem::Document(doc_result)) => {
+                        // Navigate to Knowledge Base and select this document
+                        let doc = doc_result.document.clone();
+                        self.searching = false;
+                        self.search_query.clear();
+                        self.search_results.clear();
+                        self.vim_mode = VimMode::Normal;
+                        // Open KB and select the document
+                        self.navigate_to_document(doc).await;
+                    }
+                    None => {}
                 }
             }
             KeyCode::Down | KeyCode::Tab => {
@@ -2036,6 +2066,16 @@ impl App {
             return self.handle_edit_task_key(key).await;
         }
 
+        // Handle document linking mode
+        if self.linking_document_mode {
+            return self.handle_link_document_key(key).await;
+        }
+
+        // Handle document unlinking mode
+        if self.unlinking_document_mode {
+            return self.handle_unlink_document_key(key).await;
+        }
+
         // Handle comment input mode
         if self.adding_comment {
             match key.code {
@@ -2073,6 +2113,17 @@ impl App {
                 // Enter edit mode
                 self.enter_edit_mode();
             }
+            KeyCode::Char('L') => {
+                // Link document to task
+                self.open_link_document_picker().await;
+            }
+            KeyCode::Char('U') => {
+                // Unlink document from task
+                if !self.task_linked_documents.is_empty() {
+                    self.unlinking_document_mode = true;
+                    self.unlink_document_cursor = 0;
+                }
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 // Scroll comments down (future enhancement)
             }
@@ -2083,6 +2134,157 @@ impl App {
         }
 
         Ok(false)
+    }
+
+    async fn open_link_document_picker(&mut self) {
+        // Load documents if not already loaded
+        if self.kb_documents.is_empty() {
+            if let Some(ref ws) = self.current_workspace {
+                match self.api.list_documents(ws.id).await {
+                    Ok(docs) => {
+                        self.kb_documents = docs;
+                    }
+                    Err(e) => {
+                        self.set_error(format!("Failed to load documents: {}", e));
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Filter out already linked documents
+        let linked_ids: std::collections::HashSet<_> = self.task_linked_documents
+            .iter()
+            .map(|d| d.document_id)
+            .collect();
+
+        let available: Vec<_> = self.kb_documents
+            .iter()
+            .filter(|d| !linked_ids.contains(&d.id))
+            .collect();
+
+        if available.is_empty() {
+            self.set_error("No documents available to link".to_string());
+            return;
+        }
+
+        self.linking_document_mode = true;
+        self.link_document_cursor = 0;
+    }
+
+    async fn handle_link_document_key(&mut self, key: KeyEvent) -> Result<bool> {
+        // Get available documents (not already linked)
+        let linked_ids: std::collections::HashSet<_> = self.task_linked_documents
+            .iter()
+            .map(|d| d.document_id)
+            .collect();
+
+        let available: Vec<_> = self.kb_documents
+            .iter()
+            .filter(|d| !linked_ids.contains(&d.id))
+            .collect();
+
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.linking_document_mode = false;
+                self.link_document_cursor = 0;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.link_document_cursor < available.len().saturating_sub(1) {
+                    self.link_document_cursor += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.link_document_cursor > 0 {
+                    self.link_document_cursor -= 1;
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(doc) = available.get(self.link_document_cursor) {
+                    self.do_link_document(doc.id).await;
+                }
+                self.linking_document_mode = false;
+                self.link_document_cursor = 0;
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    async fn do_link_document(&mut self, doc_id: uuid::Uuid) {
+        let workspace_id = match self.current_workspace {
+            Some(ref ws) => ws.id,
+            None => return,
+        };
+        let task_id = match self.selected_task_detail {
+            Some(ref t) => t.id,
+            None => return,
+        };
+
+        match self.api.link_task_to_document(workspace_id, doc_id, task_id).await {
+            Ok(_) => {
+                // Reload linked documents
+                match self.api.list_linked_documents(workspace_id, task_id).await {
+                    Ok(docs) => {
+                        self.task_linked_documents = docs;
+                    }
+                    Err(_) => {}
+                }
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to link document: {}", e));
+            }
+        }
+    }
+
+    async fn handle_unlink_document_key(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.unlinking_document_mode = false;
+                self.unlink_document_cursor = 0;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.unlink_document_cursor < self.task_linked_documents.len().saturating_sub(1) {
+                    self.unlink_document_cursor += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.unlink_document_cursor > 0 {
+                    self.unlink_document_cursor -= 1;
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(doc) = self.task_linked_documents.get(self.unlink_document_cursor) {
+                    let doc_id = doc.document_id;
+                    self.do_unlink_document(doc_id).await;
+                }
+                self.unlinking_document_mode = false;
+                self.unlink_document_cursor = 0;
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    async fn do_unlink_document(&mut self, doc_id: uuid::Uuid) {
+        let workspace_id = match self.current_workspace {
+            Some(ref ws) => ws.id,
+            None => return,
+        };
+        let task_id = match self.selected_task_detail {
+            Some(ref t) => t.id,
+            None => return,
+        };
+
+        match self.api.unlink_task_from_document(workspace_id, doc_id, task_id).await {
+            Ok(_) => {
+                // Remove from local list
+                self.task_linked_documents.retain(|d| d.document_id != doc_id);
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to unlink document: {}", e));
+            }
+        }
     }
 
     async fn handle_edit_task_key(&mut self, key: KeyEvent) -> Result<bool> {
@@ -2639,6 +2841,17 @@ impl App {
             }
         }
 
+        // Load linked documents
+        match self.api.list_linked_documents(workspace_id, task.id).await {
+            Ok(docs) => {
+                self.task_linked_documents = docs;
+            }
+            Err(_) => {
+                // Non-critical, continue without linked documents
+                self.task_linked_documents.clear();
+            }
+        }
+
         self.selected_task_detail = Some(task);
         self.view = View::TaskDetail;
         self.set_loading(false, "");
@@ -2647,8 +2860,13 @@ impl App {
     fn close_task_detail(&mut self) {
         self.selected_task_detail = None;
         self.task_comments.clear();
+        self.task_linked_documents.clear();
         self.adding_comment = false;
         self.new_comment_content.clear();
+        self.linking_document_mode = false;
+        self.link_document_cursor = 0;
+        self.unlinking_document_mode = false;
+        self.unlink_document_cursor = 0;
         self.vim_mode = VimMode::Normal;
         self.view = View::Dashboard;
     }
@@ -2909,6 +3127,7 @@ impl App {
                 self.build_kb_visible_list();
                 self.kb_selected_idx = 0;
                 self.kb_selected_doc = self.kb_visible_list.first().map(|(d, _)| d.clone());
+                self.load_kb_linked_tasks().await;
                 self.view = View::KnowledgeBase;
             }
             Err(e) => {
@@ -2967,6 +3186,11 @@ impl App {
         key: KeyEvent,
         _tx: mpsc::Sender<AppEvent>,
     ) -> Result<bool> {
+        // Handle linking task mode
+        if self.linking_task_mode {
+            return self.handle_link_task_key(key).await;
+        }
+
         // Handle delete confirmation
         if self.kb_confirming_delete {
             match key.code {
@@ -3044,12 +3268,14 @@ impl App {
                 if !self.kb_visible_list.is_empty() {
                     self.kb_selected_idx = (self.kb_selected_idx + 1).min(self.kb_visible_list.len() - 1);
                     self.kb_selected_doc = self.kb_visible_list.get(self.kb_selected_idx).map(|(d, _)| d.clone());
+                    self.load_kb_linked_tasks().await;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.kb_selected_idx > 0 {
                     self.kb_selected_idx -= 1;
                     self.kb_selected_doc = self.kb_visible_list.get(self.kb_selected_idx).map(|(d, _)| d.clone());
+                    self.load_kb_linked_tasks().await;
                 }
             }
             KeyCode::Char('l') | KeyCode::Right | KeyCode::Tab => {
@@ -3112,10 +3338,132 @@ impl App {
                     self.kb_selected_doc = Some(doc.clone());
                 }
             }
+            KeyCode::Char('L') => {
+                // Link task to document
+                if self.kb_selected_doc.is_some() {
+                    self.open_link_task_picker().await;
+                }
+            }
+            KeyCode::Char('U') => {
+                // Unlink task from document
+                if !self.kb_linked_tasks.is_empty() {
+                    self.unlink_task_from_kb().await;
+                }
+            }
             _ => {}
         }
 
         Ok(false)
+    }
+
+    fn get_all_tasks(&self) -> Vec<&Task> {
+        self.columns.iter().flat_map(|c| c.tasks.iter()).collect()
+    }
+
+    async fn open_link_task_picker(&mut self) {
+        // Filter out already linked tasks
+        let linked_ids: std::collections::HashSet<_> = self.kb_linked_tasks
+            .iter()
+            .map(|t| t.task_id)
+            .collect();
+
+        let available: Vec<_> = self.get_all_tasks()
+            .into_iter()
+            .filter(|t| !linked_ids.contains(&t.id))
+            .collect::<Vec<_>>();
+
+        if available.is_empty() {
+            self.set_error("No tasks available to link".to_string());
+            return;
+        }
+
+        self.linking_task_mode = true;
+        self.link_task_cursor = 0;
+    }
+
+    async fn handle_link_task_key(&mut self, key: KeyEvent) -> Result<bool> {
+        // Get available tasks (not already linked)
+        let linked_ids: std::collections::HashSet<_> = self.kb_linked_tasks
+            .iter()
+            .map(|t| t.task_id)
+            .collect();
+
+        let all_tasks = self.get_all_tasks();
+        let available: Vec<_> = all_tasks
+            .into_iter()
+            .filter(|t| !linked_ids.contains(&t.id))
+            .collect();
+
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.linking_task_mode = false;
+                self.link_task_cursor = 0;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.link_task_cursor < available.len().saturating_sub(1) {
+                    self.link_task_cursor += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.link_task_cursor > 0 {
+                    self.link_task_cursor -= 1;
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(task) = available.get(self.link_task_cursor) {
+                    self.do_link_task(task.id).await;
+                }
+                self.linking_task_mode = false;
+                self.link_task_cursor = 0;
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    async fn do_link_task(&mut self, task_id: uuid::Uuid) {
+        let workspace_id = match self.current_workspace {
+            Some(ref ws) => ws.id,
+            None => return,
+        };
+        let doc_id = match self.kb_selected_doc {
+            Some(ref d) => d.id,
+            None => return,
+        };
+
+        match self.api.link_task_to_document(workspace_id, doc_id, task_id).await {
+            Ok(_) => {
+                // Reload linked tasks
+                self.load_kb_linked_tasks().await;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to link task: {}", e));
+            }
+        }
+    }
+
+    async fn unlink_task_from_kb(&mut self) {
+        // Just unlink the first linked task for now (could add a picker later)
+        if let Some(linked_task) = self.kb_linked_tasks.first() {
+            let workspace_id = match self.current_workspace {
+                Some(ref ws) => ws.id,
+                None => return,
+            };
+            let doc_id = match self.kb_selected_doc {
+                Some(ref d) => d.id,
+                None => return,
+            };
+            let task_id = linked_task.task_id;
+
+            match self.api.unlink_task_from_document(workspace_id, doc_id, task_id).await {
+                Ok(_) => {
+                    self.kb_linked_tasks.retain(|t| t.task_id != task_id);
+                }
+                Err(e) => {
+                    self.set_error(format!("Failed to unlink task: {}", e));
+                }
+            }
+        }
     }
 
     async fn do_create_document(&mut self) {
@@ -3230,6 +3578,49 @@ impl App {
         }
 
         self.set_loading(false, "");
+    }
+
+    async fn navigate_to_document(&mut self, doc: Document) {
+        // First open knowledge base to load documents
+        self.open_knowledge_base().await;
+
+        // Find the document in the visible list
+        if let Some(pos) = self.kb_visible_list.iter().position(|(d, _)| d.id == doc.id) {
+            self.kb_selected_idx = pos;
+            self.kb_selected_doc = Some(doc);
+            self.load_kb_linked_tasks().await;
+        } else {
+            // Document might be under a collapsed parent - expand parents and rebuild
+            // For simplicity, just select the first document and set kb_selected_doc
+            self.kb_selected_doc = Some(doc);
+        }
+    }
+
+    async fn load_kb_linked_tasks(&mut self) {
+        let workspace_id = match &self.current_workspace {
+            Some(w) => w.id,
+            None => {
+                self.kb_linked_tasks.clear();
+                return;
+            }
+        };
+
+        let doc_id = match &self.kb_selected_doc {
+            Some(d) => d.id,
+            None => {
+                self.kb_linked_tasks.clear();
+                return;
+            }
+        };
+
+        match self.api.list_linked_tasks(workspace_id, doc_id).await {
+            Ok(tasks) => {
+                self.kb_linked_tasks = tasks;
+            }
+            Err(_) => {
+                self.kb_linked_tasks.clear();
+            }
+        }
     }
 
     // ============ Help Modal ============

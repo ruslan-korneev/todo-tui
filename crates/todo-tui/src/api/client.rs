@@ -3,12 +3,12 @@ use reqwest::{Client, StatusCode};
 use todo_shared::{
     api::{
         AuthResponse, CreateCommentRequest, CreateDocumentRequest, CreateStatusRequest,
-        CreateTagRequest, CreateTaskRequest, CreateWorkspaceRequest, InviteDetails, LoginRequest,
-        MoveTaskRequest, RefreshRequest, RegisterRequest, RegisterResponse,
-        ResendVerificationRequest, SearchResponse, SetTaskTagsRequest, TaskListParams,
-        UpdateCommentRequest, UpdateDocumentRequest, UpdateStatusRequest, UpdateTagRequest,
-        UpdateTaskRequest, UpdateWorkspaceRequest, VerifyEmailRequest, WorkspaceInvite,
-        WorkspaceMemberWithUser,
+        CreateTagRequest, CreateTaskRequest, CreateWorkspaceRequest, InviteDetails, LinkTaskRequest,
+        LinkedDocument, LinkedTask, LoginRequest, MoveTaskRequest, RefreshRequest, RegisterRequest,
+        RegisterResponse, ResendVerificationRequest, SearchResponse, SetTaskTagsRequest,
+        TaskListParams, UpdateCommentRequest, UpdateDocumentRequest, UpdateStatusRequest,
+        UpdateTagRequest, UpdateTaskRequest, UpdateWorkspaceRequest, VerifyEmailRequest,
+        WorkspaceInvite, WorkspaceMemberWithUser,
     },
     CommentWithAuthor, Document, Tag, Task, TaskStatus, User, Workspace, WorkspaceRole,
     WorkspaceSettings, WorkspaceWithRole,
@@ -1129,6 +1129,93 @@ impl ApiClient {
             .delete(&self.url(&format!(
                 "/workspaces/{}/documents/{}",
                 workspace_id, doc_id
+            )))
+            .header("Authorization", &auth)
+            .send()
+            .await?;
+
+        self.handle_empty_response(response).await
+    }
+
+    // ============ Task-Document Links ============
+
+    pub async fn list_linked_documents(
+        &self,
+        workspace_id: Uuid,
+        task_id: Uuid,
+    ) -> Result<Vec<LinkedDocument>, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let response = self
+            .client
+            .get(&self.url(&format!(
+                "/workspaces/{}/tasks/{}/documents",
+                workspace_id, task_id
+            )))
+            .header("Authorization", &auth)
+            .send()
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    pub async fn list_linked_tasks(
+        &self,
+        workspace_id: Uuid,
+        doc_id: Uuid,
+    ) -> Result<Vec<LinkedTask>, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let response = self
+            .client
+            .get(&self.url(&format!(
+                "/workspaces/{}/documents/{}/tasks",
+                workspace_id, doc_id
+            )))
+            .header("Authorization", &auth)
+            .send()
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    pub async fn link_task_to_document(
+        &self,
+        workspace_id: Uuid,
+        doc_id: Uuid,
+        task_id: Uuid,
+    ) -> Result<LinkedTask, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let req = LinkTaskRequest { task_id };
+
+        let response = self
+            .client
+            .post(&self.url(&format!(
+                "/workspaces/{}/documents/{}/tasks",
+                workspace_id, doc_id
+            )))
+            .header("Authorization", &auth)
+            .json(&req)
+            .send()
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    pub async fn unlink_task_from_document(
+        &self,
+        workspace_id: Uuid,
+        doc_id: Uuid,
+        task_id: Uuid,
+    ) -> Result<(), ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let response = self
+            .client
+            .delete(&self.url(&format!(
+                "/workspaces/{}/documents/{}/tasks/{}",
+                workspace_id, doc_id, task_id
             )))
             .header("Authorization", &auth)
             .send()

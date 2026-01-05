@@ -180,14 +180,16 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 - [x] Create/delete documents (n/d keys, Ctrl+K to open KB)
 
 ### 5.3 Task-Document Linking
-- [ ] POST /api/v1/workspaces/{wid}/documents/{id}/tasks - Link task
-- [ ] DELETE /api/v1/workspaces/{wid}/documents/{id}/tasks/{tid} - Unlink
-- [ ] Show linked documents in task detail
-- [ ] Show linked tasks in document view
+- [x] POST /api/v1/workspaces/{wid}/documents/{id}/tasks - Link task
+- [x] GET /api/v1/workspaces/{wid}/documents/{id}/tasks - List linked tasks
+- [x] DELETE /api/v1/workspaces/{wid}/documents/{id}/tasks/{tid} - Unlink
+- [x] GET /api/v1/workspaces/{wid}/tasks/{id}/documents - List linked documents
+- [x] Show linked documents in task detail
+- [x] Show linked tasks in document view
 
 ### 5.4 Document Search
-- [ ] Full-text search for documents
-- [ ] Unified search (tasks + documents)
+- [x] Full-text search for documents
+- [x] Unified search (tasks + documents)
 
 ---
 
@@ -385,11 +387,15 @@ GET    /api/v1/workspaces/{wid}/documents/{id}
 PATCH  /api/v1/workspaces/{wid}/documents/{id}
 DELETE /api/v1/workspaces/{wid}/documents/{id}
 POST   /api/v1/workspaces/{wid}/documents/{id}/move
+GET    /api/v1/workspaces/{wid}/documents/{id}/tasks
+POST   /api/v1/workspaces/{wid}/documents/{id}/tasks
+DELETE /api/v1/workspaces/{wid}/documents/{id}/tasks/{tid}
+GET    /api/v1/workspaces/{wid}/tasks/{id}/documents
 ```
 
 ### Search
 ```
-GET    /api/v1/workspaces/{wid}/search?q=...&type=task|document|all
+GET    /api/v1/workspaces/{wid}/search?q=...&search_type=all|tasks|documents&fuzzy=bool
 ```
 
 ### Integrations

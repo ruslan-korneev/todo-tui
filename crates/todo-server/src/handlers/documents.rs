@@ -4,7 +4,10 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use todo_shared::{
-    api::{CreateDocumentRequest, MoveDocumentRequest, UpdateDocumentRequest},
+    api::{
+        CreateDocumentRequest, LinkTaskRequest, LinkedDocument, LinkedTask, MoveDocumentRequest,
+        UpdateDocumentRequest,
+    },
     Document, WorkspaceRole,
 };
 use uuid::Uuid;
@@ -427,4 +430,179 @@ pub async fn move_document(
     tx.commit().await?;
 
     Ok(Json(row_to_document(row)))
+}
+
+/// Helper to verify task belongs to workspace
+async fn verify_task(state: &AppState, task_id: Uuid, workspace_id: Uuid) -> Result<(), AppError> {
+    let exists: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM tasks WHERE id = $1 AND workspace_id = $2")
+            .bind(task_id)
+            .bind(workspace_id)
+            .fetch_optional(&state.db)
+            .await?;
+
+    if exists.is_none() {
+        return Err(AppError::NotFound);
+    }
+    Ok(())
+}
+
+// ============ Task-Document Linking ============
+
+/// POST /api/v1/workspaces/:id/documents/:doc_id/tasks
+/// Link a task to a document
+pub async fn link_task(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path((workspace_id, doc_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<LinkTaskRequest>,
+) -> Result<Json<LinkedTask>, AppError> {
+    let role = check_membership(&state, workspace_id, user.id).await?;
+
+    if !role.can_edit() {
+        return Err(AppError::Forbidden);
+    }
+
+    verify_document(&state, doc_id, workspace_id).await?;
+    verify_task(&state, req.task_id, workspace_id).await?;
+
+    // Insert link (ON CONFLICT DO NOTHING for idempotency)
+    sqlx::query(
+        r#"
+        INSERT INTO task_document_links (task_id, document_id, created_at)
+        VALUES ($1, $2, NOW())
+        ON CONFLICT DO NOTHING
+        "#,
+    )
+    .bind(req.task_id)
+    .bind(doc_id)
+    .execute(&state.db)
+    .await?;
+
+    // Fetch task info for response
+    let (task_title, task_status_id, linked_at): (String, Uuid, DateTime<Utc>) = sqlx::query_as(
+        r#"
+        SELECT t.title, t.status_id, l.created_at
+        FROM tasks t
+        JOIN task_document_links l ON l.task_id = t.id
+        WHERE t.id = $1 AND l.document_id = $2
+        "#,
+    )
+    .bind(req.task_id)
+    .bind(doc_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(LinkedTask {
+        task_id: req.task_id,
+        task_title,
+        task_status_id,
+        linked_at,
+    }))
+}
+
+/// DELETE /api/v1/workspaces/:id/documents/:doc_id/tasks/:task_id
+/// Unlink a task from a document
+pub async fn unlink_task(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path((workspace_id, doc_id, task_id)): Path<(Uuid, Uuid, Uuid)>,
+) -> Result<(), AppError> {
+    let role = check_membership(&state, workspace_id, user.id).await?;
+
+    if !role.can_edit() {
+        return Err(AppError::Forbidden);
+    }
+
+    verify_document(&state, doc_id, workspace_id).await?;
+
+    let result = sqlx::query(
+        "DELETE FROM task_document_links WHERE task_id = $1 AND document_id = $2",
+    )
+    .bind(task_id)
+    .bind(doc_id)
+    .execute(&state.db)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+
+    Ok(())
+}
+
+/// GET /api/v1/workspaces/:id/documents/:doc_id/tasks
+/// List tasks linked to a document
+pub async fn list_linked_tasks(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path((workspace_id, doc_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<Vec<LinkedTask>>, AppError> {
+    check_membership(&state, workspace_id, user.id).await?;
+    verify_document(&state, doc_id, workspace_id).await?;
+
+    let rows: Vec<(Uuid, String, Uuid, DateTime<Utc>)> = sqlx::query_as(
+        r#"
+        SELECT t.id, t.title, t.status_id, l.created_at
+        FROM tasks t
+        JOIN task_document_links l ON l.task_id = t.id
+        WHERE l.document_id = $1 AND t.workspace_id = $2
+        ORDER BY l.created_at DESC
+        "#,
+    )
+    .bind(doc_id)
+    .bind(workspace_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let linked_tasks: Vec<LinkedTask> = rows
+        .into_iter()
+        .map(|(task_id, task_title, task_status_id, linked_at)| LinkedTask {
+            task_id,
+            task_title,
+            task_status_id,
+            linked_at,
+        })
+        .collect();
+
+    Ok(Json(linked_tasks))
+}
+
+/// GET /api/v1/workspaces/:id/tasks/:task_id/documents
+/// List documents linked to a task
+pub async fn list_linked_documents(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path((workspace_id, task_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<Vec<LinkedDocument>>, AppError> {
+    check_membership(&state, workspace_id, user.id).await?;
+    verify_task(&state, task_id, workspace_id).await?;
+
+    let rows: Vec<(Uuid, String, String, DateTime<Utc>)> = sqlx::query_as(
+        r#"
+        SELECT d.id, d.title, d.path::text, l.created_at
+        FROM documents d
+        JOIN task_document_links l ON l.document_id = d.id
+        WHERE l.task_id = $1 AND d.workspace_id = $2
+        ORDER BY l.created_at DESC
+        "#,
+    )
+    .bind(task_id)
+    .bind(workspace_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let linked_documents: Vec<LinkedDocument> = rows
+        .into_iter()
+        .map(
+            |(document_id, document_title, document_path, linked_at)| LinkedDocument {
+                document_id,
+                document_title,
+                document_path,
+                linked_at,
+            },
+        )
+        .collect();
+
+    Ok(Json(linked_documents))
 }

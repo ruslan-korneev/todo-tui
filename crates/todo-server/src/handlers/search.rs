@@ -170,7 +170,6 @@ pub async fn search(
     let page = params.page.unwrap_or(1).max(1);
     let limit = params.limit.unwrap_or(20).min(100);
     let offset = (page - 1) * limit;
-    let use_fuzzy = params.fuzzy.unwrap_or(false);
     let search_type = params.search_type.unwrap_or_default();
 
     let search_tasks = matches!(search_type, SearchType::All | SearchType::Tasks);
@@ -179,18 +178,18 @@ pub async fn search(
     let mut all_results: Vec<SearchResultItem> = Vec::new();
     let mut total: i64 = 0;
 
-    // Search tasks
+    // Search tasks using trigrams (multilingual)
     if search_tasks {
         let (task_total, task_results) =
-            search_tasks_impl(&state, workspace_id, query, use_fuzzy, limit, offset).await?;
+            search_tasks_impl(&state, workspace_id, query, limit, offset).await?;
         total += task_total;
         all_results.extend(task_results.into_iter().map(row_to_search_result));
     }
 
-    // Search documents
+    // Search documents using trigrams (multilingual)
     if search_docs {
         let (doc_total, doc_results) =
-            search_documents_impl(&state, workspace_id, query, use_fuzzy, limit, offset).await?;
+            search_documents_impl(&state, workspace_id, query, limit, offset).await?;
         total += doc_total;
         all_results.extend(doc_results.into_iter().map(row_to_document_result));
     }
@@ -223,224 +222,131 @@ pub async fn search(
     }))
 }
 
+/// Search tasks using trigrams (pg_trgm) - works with any language
+/// Uses word_similarity for better matching of words within longer text
 async fn search_tasks_impl(
     state: &AppState,
     workspace_id: Uuid,
     query: &str,
-    use_fuzzy: bool,
     limit: u32,
     offset: u32,
 ) -> Result<(i64, Vec<SearchTaskRow>), AppError> {
-    let (total, results) = if use_fuzzy {
-        // Trigram fuzzy search
-        let (total,): (i64,) = sqlx::query_as(
-            r#"
-            SELECT COUNT(*)
-            FROM tasks t
-            WHERE t.workspace_id = $1
-              AND (t.title % $2 OR t.description % $2)
-            "#,
-        )
-        .bind(workspace_id)
-        .bind(query)
-        .fetch_one(&state.db)
-        .await?;
+    // Count total matches using word_similarity (finds query as word in text)
+    let (total,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM tasks t
+        WHERE t.workspace_id = $1
+          AND ($2 <% t.title OR $2 <% COALESCE(t.description, ''))
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(query)
+    .fetch_one(&state.db)
+    .await?;
 
-        let rows: Vec<SearchTaskRow> = sqlx::query_as(
-            r#"
-            SELECT t.id, t.workspace_id, t.status_id, t.title, t.description,
-                   t.priority as "priority: Priority", t.due_date, t.time_estimate_minutes,
-                   t.position, t.created_by, t.assigned_to, t.created_at, t.updated_at, t.completed_at,
-                   GREATEST(
-                       similarity(t.title, $2),
-                       COALESCE(similarity(t.description, $2), 0)
-                   )::real as rank,
-                   NULL::text as title_highlight,
-                   NULL::text as desc_highlight
-            FROM tasks t
-            WHERE t.workspace_id = $1
-              AND (t.title % $2 OR t.description % $2)
-            ORDER BY rank DESC
-            LIMIT $3 OFFSET $4
-            "#,
-        )
-        .bind(workspace_id)
-        .bind(query)
-        .bind(limit as i64)
-        .bind(offset as i64)
-        .fetch_all(&state.db)
-        .await?;
+    // Get results with word_similarity ranking
+    let rows: Vec<SearchTaskRow> = sqlx::query_as(
+        r#"
+        SELECT t.id, t.workspace_id, t.status_id, t.title, t.description,
+               t.priority as "priority: Priority", t.due_date, t.time_estimate_minutes,
+               t.position, t.created_by, t.assigned_to, t.created_at, t.updated_at, t.completed_at,
+               GREATEST(
+                   word_similarity($2, t.title),
+                   COALESCE(word_similarity($2, t.description), 0)
+               )::real as rank,
+               NULL::text as title_highlight,
+               NULL::text as desc_highlight
+        FROM tasks t
+        WHERE t.workspace_id = $1
+          AND ($2 <% t.title OR $2 <% COALESCE(t.description, ''))
+        ORDER BY rank DESC
+        LIMIT $3 OFFSET $4
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(query)
+    .bind(limit as i64)
+    .bind(offset as i64)
+    .fetch_all(&state.db)
+    .await?;
 
-        // Apply fuzzy highlighting in Rust (PostgreSQL doesn't have built-in trigram highlighting)
-        let rows: Vec<SearchTaskRow> = rows
-            .into_iter()
-            .map(|mut row| {
-                row.title_highlight = Some(highlight_fuzzy_matches(&row.title, query));
-                row.desc_highlight = row
-                    .description
-                    .as_ref()
-                    .map(|d| highlight_fuzzy_matches(d, query));
-                row
-            })
-            .collect();
+    // Apply highlighting in Rust (PostgreSQL doesn't have built-in trigram highlighting)
+    let rows: Vec<SearchTaskRow> = rows
+        .into_iter()
+        .map(|mut row| {
+            row.title_highlight = Some(highlight_fuzzy_matches(&row.title, query));
+            row.desc_highlight = row
+                .description
+                .as_ref()
+                .map(|d| highlight_fuzzy_matches(d, query));
+            row
+        })
+        .collect();
 
-        (total, rows)
-    } else {
-        // Full-text search
-        let (total,): (i64,) = sqlx::query_as(
-            r#"
-            SELECT COUNT(*)
-            FROM tasks t
-            WHERE t.workspace_id = $1
-              AND to_tsvector('english', COALESCE(t.title, '') || ' ' || COALESCE(t.description, ''))
-                  @@ plainto_tsquery('english', $2)
-            "#,
-        )
-        .bind(workspace_id)
-        .bind(query)
-        .fetch_one(&state.db)
-        .await?;
-
-        let rows: Vec<SearchTaskRow> = sqlx::query_as(
-            r#"
-            SELECT t.id, t.workspace_id, t.status_id, t.title, t.description,
-                   t.priority as "priority: Priority", t.due_date, t.time_estimate_minutes,
-                   t.position, t.created_by, t.assigned_to, t.created_at, t.updated_at, t.completed_at,
-                   ts_rank(
-                       to_tsvector('english', COALESCE(t.title, '') || ' ' || COALESCE(t.description, '')),
-                       plainto_tsquery('english', $2)
-                   )::real as rank,
-                   ts_headline('english', t.title, plainto_tsquery('english', $2),
-                              'StartSel=<<, StopSel=>>') as title_highlight,
-                   ts_headline('english', COALESCE(t.description, ''), plainto_tsquery('english', $2),
-                              'StartSel=<<, StopSel=>>, MaxWords=30, MinWords=10') as desc_highlight
-            FROM tasks t
-            WHERE t.workspace_id = $1
-              AND to_tsvector('english', COALESCE(t.title, '') || ' ' || COALESCE(t.description, ''))
-                  @@ plainto_tsquery('english', $2)
-            ORDER BY rank DESC
-            LIMIT $3 OFFSET $4
-            "#,
-        )
-        .bind(workspace_id)
-        .bind(query)
-        .bind(limit as i64)
-        .bind(offset as i64)
-        .fetch_all(&state.db)
-        .await?;
-
-        (total, rows)
-    };
-
-    Ok((total, results))
+    Ok((total, rows))
 }
 
+/// Search documents using trigrams (pg_trgm) - works with any language
+/// Uses word_similarity for better matching of words within longer text
 async fn search_documents_impl(
     state: &AppState,
     workspace_id: Uuid,
     query: &str,
-    use_fuzzy: bool,
     limit: u32,
     offset: u32,
 ) -> Result<(i64, Vec<SearchDocumentRow>), AppError> {
-    let (total, results) = if use_fuzzy {
-        // Trigram fuzzy search
-        let (total,): (i64,) = sqlx::query_as(
-            r#"
-            SELECT COUNT(*)
-            FROM documents d
-            WHERE d.workspace_id = $1
-              AND (d.title % $2 OR d.content % $2)
-            "#,
-        )
-        .bind(workspace_id)
-        .bind(query)
-        .fetch_one(&state.db)
-        .await?;
+    // Count total matches using word_similarity (finds query as word in text)
+    let (total,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM documents d
+        WHERE d.workspace_id = $1
+          AND ($2 <% d.title OR $2 <% COALESCE(d.content, ''))
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(query)
+    .fetch_one(&state.db)
+    .await?;
 
-        let rows: Vec<SearchDocumentRow> = sqlx::query_as(
-            r#"
-            SELECT d.id, d.workspace_id, d.path::text, d.parent_id, d.title, d.slug,
-                   d.content, d.created_by, d.created_at, d.updated_at,
-                   GREATEST(
-                       similarity(d.title, $2),
-                       COALESCE(similarity(d.content, $2), 0)
-                   )::real as rank,
-                   NULL::text as title_highlight,
-                   NULL::text as content_highlight
-            FROM documents d
-            WHERE d.workspace_id = $1
-              AND (d.title % $2 OR d.content % $2)
-            ORDER BY rank DESC
-            LIMIT $3 OFFSET $4
-            "#,
-        )
-        .bind(workspace_id)
-        .bind(query)
-        .bind(limit as i64)
-        .bind(offset as i64)
-        .fetch_all(&state.db)
-        .await?;
+    // Get results with word_similarity ranking
+    let rows: Vec<SearchDocumentRow> = sqlx::query_as(
+        r#"
+        SELECT d.id, d.workspace_id, d.path::text, d.parent_id, d.title, d.slug,
+               d.content, d.created_by, d.created_at, d.updated_at,
+               GREATEST(
+                   word_similarity($2, d.title),
+                   COALESCE(word_similarity($2, d.content), 0)
+               )::real as rank,
+               NULL::text as title_highlight,
+               NULL::text as content_highlight
+        FROM documents d
+        WHERE d.workspace_id = $1
+          AND ($2 <% d.title OR $2 <% COALESCE(d.content, ''))
+        ORDER BY rank DESC
+        LIMIT $3 OFFSET $4
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(query)
+    .bind(limit as i64)
+    .bind(offset as i64)
+    .fetch_all(&state.db)
+    .await?;
 
-        // Apply fuzzy highlighting in Rust
-        let rows: Vec<SearchDocumentRow> = rows
-            .into_iter()
-            .map(|mut row| {
-                row.title_highlight = Some(highlight_fuzzy_matches(&row.title, query));
-                row.content_highlight = row
-                    .content
-                    .as_ref()
-                    .map(|c| highlight_fuzzy_matches(c, query));
-                row
-            })
-            .collect();
+    // Apply highlighting in Rust (PostgreSQL doesn't have built-in trigram highlighting)
+    let rows: Vec<SearchDocumentRow> = rows
+        .into_iter()
+        .map(|mut row| {
+            row.title_highlight = Some(highlight_fuzzy_matches(&row.title, query));
+            row.content_highlight = row
+                .content
+                .as_ref()
+                .map(|c| highlight_fuzzy_matches(c, query));
+            row
+        })
+        .collect();
 
-        (total, rows)
-    } else {
-        // Full-text search
-        let (total,): (i64,) = sqlx::query_as(
-            r#"
-            SELECT COUNT(*)
-            FROM documents d
-            WHERE d.workspace_id = $1
-              AND to_tsvector('english', COALESCE(d.title, '') || ' ' || COALESCE(d.content, ''))
-                  @@ plainto_tsquery('english', $2)
-            "#,
-        )
-        .bind(workspace_id)
-        .bind(query)
-        .fetch_one(&state.db)
-        .await?;
-
-        let rows: Vec<SearchDocumentRow> = sqlx::query_as(
-            r#"
-            SELECT d.id, d.workspace_id, d.path::text, d.parent_id, d.title, d.slug,
-                   d.content, d.created_by, d.created_at, d.updated_at,
-                   ts_rank(
-                       to_tsvector('english', COALESCE(d.title, '') || ' ' || COALESCE(d.content, '')),
-                       plainto_tsquery('english', $2)
-                   )::real as rank,
-                   ts_headline('english', d.title, plainto_tsquery('english', $2),
-                              'StartSel=<<, StopSel=>>') as title_highlight,
-                   ts_headline('english', COALESCE(d.content, ''), plainto_tsquery('english', $2),
-                              'StartSel=<<, StopSel=>>, MaxWords=30, MinWords=10') as content_highlight
-            FROM documents d
-            WHERE d.workspace_id = $1
-              AND to_tsvector('english', COALESCE(d.title, '') || ' ' || COALESCE(d.content, ''))
-                  @@ plainto_tsquery('english', $2)
-            ORDER BY rank DESC
-            LIMIT $3 OFFSET $4
-            "#,
-        )
-        .bind(workspace_id)
-        .bind(query)
-        .bind(limit as i64)
-        .bind(offset as i64)
-        .fetch_all(&state.db)
-        .await?;
-
-        (total, rows)
-    };
-
-    Ok((total, results))
+    Ok((total, rows))
 }

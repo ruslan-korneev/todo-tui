@@ -15,8 +15,6 @@ pub enum SearchType {
 pub struct SearchParams {
     pub q: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub fuzzy: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub search_type: Option<SearchType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page: Option<u32>,

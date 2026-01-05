@@ -895,13 +895,40 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         .map(|w| w.name.as_str())
         .unwrap_or("No workspace");
 
+    let username = app
+        .user
+        .as_ref()
+        .map(|u| format!("@{}", u.username))
+        .unwrap_or_default();
+
+    let (status_icon, status_text, status_color) = if app.is_connected {
+        ("●", "Connected", Color::Green)
+    } else {
+        ("○", "Disconnected", Color::Red)
+    };
+
+    // Calculate right side content length
+    let right_content = format!("{}  {} {}", username, status_icon, status_text);
+    let left_len = workspace_name.len() + 1; // +1 for leading space
+    let right_len = right_content.len() + 1; // +1 for trailing space
+    let available_width = area.width.saturating_sub(2) as usize; // -2 for borders
+    let padding = available_width.saturating_sub(left_len + right_len);
+
     let header = Paragraph::new(vec![Line::from(vec![
+        Span::raw(" "),
         Span::styled(
-            "TODO TUI",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            workspace_name,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" | "),
-        Span::styled(workspace_name, Style::default().fg(Color::Yellow)),
+        Span::raw(" ".repeat(padding)),
+        Span::styled(&username, Style::default().fg(Color::Cyan)),
+        Span::raw("  "),
+        Span::styled(status_icon, Style::default().fg(status_color)),
+        Span::raw(" "),
+        Span::styled(status_text, Style::default().fg(status_color)),
+        Span::raw(" "),
     ])])
     .block(Block::default().borders(Borders::BOTTOM));
 

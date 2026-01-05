@@ -374,6 +374,9 @@ pub struct App {
 
     // Terminal clear flag (set after external editor)
     pub needs_terminal_clear: bool,
+
+    // Connection status
+    pub is_connected: bool,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -519,6 +522,8 @@ impl App {
             help_scroll: 0,
 
             needs_terminal_clear: false,
+
+            is_connected: true,
         }
     }
 
@@ -598,6 +603,10 @@ impl App {
     }
 
     pub fn set_error(&mut self, message: String) {
+        // Detect network errors to update connection status
+        if message.contains("Network error") || message.contains("connection") {
+            self.is_connected = false;
+        }
         self.error_message = Some(message);
     }
 
@@ -3098,6 +3107,7 @@ impl App {
 
     pub fn on_workspaces_loaded(&mut self, workspaces: Vec<WorkspaceWithRole>) {
         self.workspaces = workspaces;
+        self.is_connected = true;
         self.set_loading(false, "");
     }
 
@@ -3161,6 +3171,7 @@ impl App {
         self.selected_column = 0;
         self.selected_task = 0;
         self.view = View::Dashboard;
+        self.is_connected = true;
         self.set_loading(false, "");
     }
 

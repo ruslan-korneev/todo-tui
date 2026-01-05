@@ -321,7 +321,7 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 - [x] Quote of the day
 - [x] Markdown rendering in Knowledge Base
 - [x] Remember last opened workspace
-- [ ] Status bar (sync status, workspace, user)
+- [x] Status bar (sync status, workspace, user)
 - [ ] Notification toasts
 - [ ] Undo/redo for task changes
 - [ ] Offline mode (queue changes)

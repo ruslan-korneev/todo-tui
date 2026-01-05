@@ -143,6 +143,114 @@ impl ApiClient {
         true
     }
 
+    // ============ Authenticated Request Helpers ============
+
+    /// Make an authenticated GET request, auto-refreshing token if needed
+    async fn authed_get(&mut self, path: &str) -> Result<reqwest::Response, ApiError> {
+        if !self.ensure_valid_token().await {
+            return Err(ApiError::Unauthorized);
+        }
+        self.client
+            .get(&self.url(path))
+            .header("Authorization", self.auth_header().unwrap())
+            .send()
+            .await
+            .map_err(ApiError::Network)
+    }
+
+    /// Make an authenticated POST request, auto-refreshing token if needed
+    async fn authed_post<T: serde::Serialize>(
+        &mut self,
+        path: &str,
+        body: &T,
+    ) -> Result<reqwest::Response, ApiError> {
+        if !self.ensure_valid_token().await {
+            return Err(ApiError::Unauthorized);
+        }
+        self.client
+            .post(&self.url(path))
+            .header("Authorization", self.auth_header().unwrap())
+            .json(body)
+            .send()
+            .await
+            .map_err(ApiError::Network)
+    }
+
+    /// Make an authenticated POST request without body, auto-refreshing token if needed
+    async fn authed_post_empty(&mut self, path: &str) -> Result<reqwest::Response, ApiError> {
+        if !self.ensure_valid_token().await {
+            return Err(ApiError::Unauthorized);
+        }
+        self.client
+            .post(&self.url(path))
+            .header("Authorization", self.auth_header().unwrap())
+            .send()
+            .await
+            .map_err(ApiError::Network)
+    }
+
+    /// Make an authenticated PATCH request, auto-refreshing token if needed
+    async fn authed_patch<T: serde::Serialize>(
+        &mut self,
+        path: &str,
+        body: &T,
+    ) -> Result<reqwest::Response, ApiError> {
+        if !self.ensure_valid_token().await {
+            return Err(ApiError::Unauthorized);
+        }
+        self.client
+            .patch(&self.url(path))
+            .header("Authorization", self.auth_header().unwrap())
+            .json(body)
+            .send()
+            .await
+            .map_err(ApiError::Network)
+    }
+
+    /// Make an authenticated PUT request, auto-refreshing token if needed
+    async fn authed_put<T: serde::Serialize>(
+        &mut self,
+        path: &str,
+        body: &T,
+    ) -> Result<reqwest::Response, ApiError> {
+        if !self.ensure_valid_token().await {
+            return Err(ApiError::Unauthorized);
+        }
+        self.client
+            .put(&self.url(path))
+            .header("Authorization", self.auth_header().unwrap())
+            .json(body)
+            .send()
+            .await
+            .map_err(ApiError::Network)
+    }
+
+    /// Make an authenticated DELETE request, auto-refreshing token if needed
+    async fn authed_delete(&mut self, path: &str) -> Result<reqwest::Response, ApiError> {
+        if !self.ensure_valid_token().await {
+            return Err(ApiError::Unauthorized);
+        }
+        self.client
+            .delete(&self.url(path))
+            .header("Authorization", self.auth_header().unwrap())
+            .send()
+            .await
+            .map_err(ApiError::Network)
+    }
+
+    /// Make an authenticated GET request to a full URL (for custom query params)
+    async fn authed_get_url(&mut self, url: &str) -> Result<reqwest::Response, ApiError> {
+        if !self.ensure_valid_token().await {
+            return Err(ApiError::Unauthorized);
+        }
+        self.client
+            .get(url)
+            .header("Authorization", self.auth_header().unwrap())
+            .send()
+            .await
+            .map_err(ApiError::Network)
+    }
+
     /// Handle API response
     async fn handle_response<T: serde::de::DeserializeOwned>(
         &self,
@@ -363,159 +471,83 @@ impl ApiClient {
         Ok(())
     }
 
-    pub async fn me(&self) -> Result<User, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .get(&self.url("/auth/me"))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+    pub async fn me(&mut self) -> Result<User, ApiError> {
+        let response = self.authed_get("/auth/me").await?;
         self.handle_response(response).await
     }
 
     // ============ Workspaces ============
 
-    pub async fn list_workspaces(&self) -> Result<Vec<WorkspaceWithRole>, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .get(&self.url("/workspaces"))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+    pub async fn list_workspaces(&mut self) -> Result<Vec<WorkspaceWithRole>, ApiError> {
+        let response = self.authed_get("/workspaces").await?;
         self.handle_response(response).await
     }
 
     pub async fn create_workspace(
-        &self,
+        &mut self,
         name: &str,
         description: Option<&str>,
     ) -> Result<Workspace, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
         let req = CreateWorkspaceRequest {
             name: name.to_string(),
             description: description.map(|s| s.to_string()),
         };
-
-        let response = self
-            .client
-            .post(&self.url("/workspaces"))
-            .header("Authorization", &auth)
-            .json(&req)
-            .send()
-            .await?;
-
+        let response = self.authed_post("/workspaces", &req).await?;
         self.handle_response(response).await
     }
 
-    pub async fn get_workspace(&self, id: Uuid) -> Result<WorkspaceWithRole, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .get(&self.url(&format!("/workspaces/{}", id)))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+    pub async fn get_workspace(&mut self, id: Uuid) -> Result<WorkspaceWithRole, ApiError> {
+        let response = self.authed_get(&format!("/workspaces/{}", id)).await?;
         self.handle_response(response).await
     }
 
     pub async fn update_workspace(
-        &self,
+        &mut self,
         id: Uuid,
         name: Option<&str>,
         description: Option<&str>,
         settings: Option<WorkspaceSettings>,
     ) -> Result<Workspace, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
         let req = UpdateWorkspaceRequest {
             name: name.map(|s| s.to_string()),
             description: description.map(|s| s.to_string()),
             settings,
         };
-
-        let response = self
-            .client
-            .patch(&self.url(&format!("/workspaces/{}", id)))
-            .header("Authorization", &auth)
-            .json(&req)
-            .send()
-            .await?;
-
+        let response = self.authed_patch(&format!("/workspaces/{}", id), &req).await?;
         self.handle_response(response).await
     }
 
     pub async fn list_members(
-        &self,
+        &mut self,
         workspace_id: Uuid,
     ) -> Result<Vec<WorkspaceMemberWithUser>, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .get(&self.url(&format!("/workspaces/{}/members", workspace_id)))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+        let response = self.authed_get(&format!("/workspaces/{}/members", workspace_id)).await?;
         self.handle_response(response).await
     }
 
-    pub async fn delete_workspace(&self, id: Uuid) -> Result<(), ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .delete(&self.url(&format!("/workspaces/{}", id)))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+    pub async fn delete_workspace(&mut self, id: Uuid) -> Result<(), ApiError> {
+        let response = self.authed_delete(&format!("/workspaces/{}", id)).await?;
         self.handle_empty_response(response).await
     }
 
-    pub async fn get_workspace_stats(&self, workspace_id: Uuid) -> Result<WorkspaceStats, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .get(&self.url(&format!("/workspaces/{}/stats", workspace_id)))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+    pub async fn get_workspace_stats(&mut self, workspace_id: Uuid) -> Result<WorkspaceStats, ApiError> {
+        let response = self.authed_get(&format!("/workspaces/{}/stats", workspace_id)).await?;
         self.handle_response(response).await
     }
 
     // ============ Member Management ============
 
     pub async fn create_invite(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         email: &str,
         role: WorkspaceRole,
     ) -> Result<WorkspaceInvite, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .post(self.url(&format!("/workspaces/{}/invites", workspace_id)))
-            .header("Authorization", &auth)
-            .json(&serde_json::json!({
-                "email": email,
-                "role": role
-            }))
-            .send()
-            .await?;
-
+        let body = serde_json::json!({
+            "email": email,
+            "role": role
+        });
+        let response = self.authed_post(&format!("/workspaces/{}/invites", workspace_id), &body).await?;
         self.handle_response(response).await
     }
 
@@ -529,180 +561,110 @@ impl ApiClient {
         self.handle_response(response).await
     }
 
-    pub async fn accept_invite(&self, token: &str) -> Result<WorkspaceWithRole, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .post(self.url(&format!("/invites/{}/accept", token)))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+    pub async fn accept_invite(&mut self, token: &str) -> Result<WorkspaceWithRole, ApiError> {
+        let response = self.authed_post_empty(&format!("/invites/{}/accept", token)).await?;
         self.handle_response(response).await
     }
 
     pub async fn update_member_role(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         user_id: Uuid,
         role: WorkspaceRole,
     ) -> Result<WorkspaceMemberWithUser, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .put(self.url(&format!(
-                "/workspaces/{}/members/{}",
-                workspace_id, user_id
-            )))
-            .header("Authorization", &auth)
-            .json(&serde_json::json!({ "role": role }))
-            .send()
-            .await?;
-
+        let body = serde_json::json!({ "role": role });
+        let response = self.authed_put(
+            &format!("/workspaces/{}/members/{}", workspace_id, user_id),
+            &body,
+        ).await?;
         self.handle_response(response).await
     }
 
-    pub async fn remove_member(&self, workspace_id: Uuid, user_id: Uuid) -> Result<(), ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .delete(self.url(&format!(
-                "/workspaces/{}/members/{}",
-                workspace_id, user_id
-            )))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+    pub async fn remove_member(&mut self, workspace_id: Uuid, user_id: Uuid) -> Result<(), ApiError> {
+        let response = self.authed_delete(
+            &format!("/workspaces/{}/members/{}", workspace_id, user_id),
+        ).await?;
         self.handle_empty_response(response).await
     }
 
     // ============ Statuses ============
 
-    pub async fn list_statuses(&self, workspace_id: Uuid) -> Result<Vec<TaskStatus>, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .get(&self.url(&format!("/workspaces/{}/statuses", workspace_id)))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+    pub async fn list_statuses(&mut self, workspace_id: Uuid) -> Result<Vec<TaskStatus>, ApiError> {
+        let response = self.authed_get(&format!("/workspaces/{}/statuses", workspace_id)).await?;
         self.handle_response(response).await
     }
 
     pub async fn create_status(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         name: &str,
         color: Option<&str>,
         is_done: bool,
     ) -> Result<TaskStatus, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
         let req = CreateStatusRequest {
             name: name.to_string(),
             color: color.map(|s| s.to_string()),
             is_done,
         };
-
-        let response = self
-            .client
-            .post(&self.url(&format!("/workspaces/{}/statuses", workspace_id)))
-            .header("Authorization", &auth)
-            .json(&req)
-            .send()
-            .await?;
-
+        let response = self.authed_post(&format!("/workspaces/{}/statuses", workspace_id), &req).await?;
         self.handle_response(response).await
     }
 
     pub async fn update_status(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         status_id: Uuid,
         name: Option<&str>,
         color: Option<&str>,
         is_done: Option<bool>,
     ) -> Result<TaskStatus, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
         let req = UpdateStatusRequest {
             name: name.map(|s| s.to_string()),
             color: color.map(|s| s.to_string()),
             is_done,
         };
-
-        let response = self
-            .client
-            .patch(&self.url(&format!(
-                "/workspaces/{}/statuses/{}",
-                workspace_id, status_id
-            )))
-            .header("Authorization", &auth)
-            .json(&req)
-            .send()
-            .await?;
-
+        let response = self.authed_patch(
+            &format!("/workspaces/{}/statuses/{}", workspace_id, status_id),
+            &req,
+        ).await?;
         self.handle_response(response).await
     }
 
     pub async fn delete_status(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         status_id: Uuid,
     ) -> Result<(), ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .delete(&self.url(&format!(
-                "/workspaces/{}/statuses/{}",
-                workspace_id, status_id
-            )))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+        let response = self.authed_delete(
+            &format!("/workspaces/{}/statuses/{}", workspace_id, status_id),
+        ).await?;
         self.handle_empty_response(response).await
     }
 
     pub async fn reorder_statuses(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         status_ids: Vec<Uuid>,
     ) -> Result<Vec<TaskStatus>, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
         #[derive(serde::Serialize)]
         struct ReorderRequest {
             status_ids: Vec<Uuid>,
         }
-
-        let response = self
-            .client
-            .post(&self.url(&format!("/workspaces/{}/statuses/reorder", workspace_id)))
-            .header("Authorization", &auth)
-            .json(&ReorderRequest { status_ids })
-            .send()
-            .await?;
-
+        let req = ReorderRequest { status_ids };
+        let response = self.authed_post(
+            &format!("/workspaces/{}/statuses/reorder", workspace_id),
+            &req,
+        ).await?;
         self.handle_response(response).await
     }
 
     // ============ Tasks ============
 
     pub async fn list_tasks(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         params: Option<&TaskListParams>,
     ) -> Result<TaskListResponse, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
         let mut url = self.url(&format!("/workspaces/{}/tasks", workspace_id));
 
         // Build query string from TaskListParams
@@ -750,128 +712,72 @@ impl ApiClient {
             }
         }
 
-        let response = self
-            .client
-            .get(&url)
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+        let response = self.authed_get_url(&url).await?;
         self.handle_response(response).await
     }
 
     pub async fn create_task(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         req: CreateTaskRequest,
     ) -> Result<Task, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .post(&self.url(&format!("/workspaces/{}/tasks", workspace_id)))
-            .header("Authorization", &auth)
-            .json(&req)
-            .send()
-            .await?;
-
+        let response = self.authed_post(&format!("/workspaces/{}/tasks", workspace_id), &req).await?;
         self.handle_response(response).await
     }
 
-    pub async fn get_task(&self, workspace_id: Uuid, task_id: Uuid) -> Result<Task, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .get(&self.url(&format!(
-                "/workspaces/{}/tasks/{}",
-                workspace_id, task_id
-            )))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+    pub async fn get_task(&mut self, workspace_id: Uuid, task_id: Uuid) -> Result<Task, ApiError> {
+        let response = self.authed_get(&format!("/workspaces/{}/tasks/{}", workspace_id, task_id)).await?;
         self.handle_response(response).await
     }
 
     pub async fn update_task(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         task_id: Uuid,
         req: UpdateTaskRequest,
     ) -> Result<Task, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .patch(&self.url(&format!(
-                "/workspaces/{}/tasks/{}",
-                workspace_id, task_id
-            )))
-            .header("Authorization", &auth)
-            .json(&req)
-            .send()
-            .await?;
-
+        let response = self.authed_patch(
+            &format!("/workspaces/{}/tasks/{}", workspace_id, task_id),
+            &req,
+        ).await?;
         self.handle_response(response).await
     }
 
-    pub async fn delete_task(&self, workspace_id: Uuid, task_id: Uuid) -> Result<(), ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .delete(&self.url(&format!(
-                "/workspaces/{}/tasks/{}",
-                workspace_id, task_id
-            )))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+    pub async fn delete_task(&mut self, workspace_id: Uuid, task_id: Uuid) -> Result<(), ApiError> {
+        let response = self.authed_delete(
+            &format!("/workspaces/{}/tasks/{}", workspace_id, task_id),
+        ).await?;
         self.handle_empty_response(response).await
     }
 
     pub async fn move_task(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         task_id: Uuid,
         status_id: Uuid,
         position: Option<i32>,
     ) -> Result<Task, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
         let req = MoveTaskRequest {
             status_id,
             position,
         };
-
-        let response = self
-            .client
-            .post(&self.url(&format!(
-                "/workspaces/{}/tasks/{}/move",
-                workspace_id, task_id
-            )))
-            .header("Authorization", &auth)
-            .json(&req)
-            .send()
-            .await?;
-
+        let response = self.authed_post(
+            &format!("/workspaces/{}/tasks/{}/move", workspace_id, task_id),
+            &req,
+        ).await?;
         self.handle_response(response).await
     }
 
     // ============ Search ============
 
     pub async fn search(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         query: &str,
         fuzzy: bool,
         page: Option<u32>,
         limit: Option<u32>,
     ) -> Result<SearchResponse, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
         let mut url = self.url(&format!("/workspaces/{}/search", workspace_id));
         url.push_str(&format!("?q={}", urlencoding::encode(query)));
 
@@ -885,408 +791,236 @@ impl ApiClient {
             url.push_str(&format!("&limit={}", l));
         }
 
-        let response = self
-            .client
-            .get(&url)
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+        let response = self.authed_get_url(&url).await?;
         self.handle_response(response).await
     }
 
     // ============ Comments ============
 
     pub async fn list_comments(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         task_id: Uuid,
     ) -> Result<Vec<CommentWithAuthor>, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .get(&self.url(&format!(
-                "/workspaces/{}/tasks/{}/comments",
-                workspace_id, task_id
-            )))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+        let response = self.authed_get(
+            &format!("/workspaces/{}/tasks/{}/comments", workspace_id, task_id),
+        ).await?;
         self.handle_response(response).await
     }
 
     pub async fn create_comment(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         task_id: Uuid,
         content: &str,
     ) -> Result<CommentWithAuthor, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
         let req = CreateCommentRequest {
             content: content.to_string(),
         };
-
-        let response = self
-            .client
-            .post(&self.url(&format!(
-                "/workspaces/{}/tasks/{}/comments",
-                workspace_id, task_id
-            )))
-            .header("Authorization", &auth)
-            .json(&req)
-            .send()
-            .await?;
-
+        let response = self.authed_post(
+            &format!("/workspaces/{}/tasks/{}/comments", workspace_id, task_id),
+            &req,
+        ).await?;
         self.handle_response(response).await
     }
 
     pub async fn update_comment(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         task_id: Uuid,
         comment_id: Uuid,
         content: &str,
     ) -> Result<CommentWithAuthor, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
         let req = UpdateCommentRequest {
             content: content.to_string(),
         };
-
-        let response = self
-            .client
-            .patch(&self.url(&format!(
-                "/workspaces/{}/tasks/{}/comments/{}",
-                workspace_id, task_id, comment_id
-            )))
-            .header("Authorization", &auth)
-            .json(&req)
-            .send()
-            .await?;
-
+        let response = self.authed_patch(
+            &format!("/workspaces/{}/tasks/{}/comments/{}", workspace_id, task_id, comment_id),
+            &req,
+        ).await?;
         self.handle_response(response).await
     }
 
     pub async fn delete_comment(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         task_id: Uuid,
         comment_id: Uuid,
     ) -> Result<(), ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .delete(&self.url(&format!(
-                "/workspaces/{}/tasks/{}/comments/{}",
-                workspace_id, task_id, comment_id
-            )))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+        let response = self.authed_delete(
+            &format!("/workspaces/{}/tasks/{}/comments/{}", workspace_id, task_id, comment_id),
+        ).await?;
         self.handle_empty_response(response).await
     }
 
     // ============ Tags ============
 
-    pub async fn list_tags(&self, workspace_id: Uuid) -> Result<Vec<Tag>, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .get(&self.url(&format!("/workspaces/{}/tags", workspace_id)))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+    pub async fn list_tags(&mut self, workspace_id: Uuid) -> Result<Vec<Tag>, ApiError> {
+        let response = self.authed_get(&format!("/workspaces/{}/tags", workspace_id)).await?;
         self.handle_response(response).await
     }
 
     pub async fn create_tag(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         name: &str,
         color: Option<&str>,
     ) -> Result<Tag, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
         let req = CreateTagRequest {
             name: name.to_string(),
             color: color.map(|c| c.to_string()),
         };
-
-        let response = self
-            .client
-            .post(&self.url(&format!("/workspaces/{}/tags", workspace_id)))
-            .header("Authorization", &auth)
-            .json(&req)
-            .send()
-            .await?;
-
+        let response = self.authed_post(&format!("/workspaces/{}/tags", workspace_id), &req).await?;
         self.handle_response(response).await
     }
 
     pub async fn update_tag(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         tag_id: Uuid,
         name: Option<&str>,
         color: Option<&str>,
     ) -> Result<Tag, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
         let req = UpdateTagRequest {
             name: name.map(|n| n.to_string()),
             color: color.map(|c| c.to_string()),
         };
-
-        let response = self
-            .client
-            .patch(&self.url(&format!("/workspaces/{}/tags/{}", workspace_id, tag_id)))
-            .header("Authorization", &auth)
-            .json(&req)
-            .send()
-            .await?;
-
+        let response = self.authed_patch(
+            &format!("/workspaces/{}/tags/{}", workspace_id, tag_id),
+            &req,
+        ).await?;
         self.handle_response(response).await
     }
 
-    pub async fn delete_tag(&self, workspace_id: Uuid, tag_id: Uuid) -> Result<(), ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .delete(&self.url(&format!("/workspaces/{}/tags/{}", workspace_id, tag_id)))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+    pub async fn delete_tag(&mut self, workspace_id: Uuid, tag_id: Uuid) -> Result<(), ApiError> {
+        let response = self.authed_delete(
+            &format!("/workspaces/{}/tags/{}", workspace_id, tag_id),
+        ).await?;
         self.handle_empty_response(response).await
     }
 
     pub async fn set_task_tags(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         task_id: Uuid,
         tag_ids: Vec<Uuid>,
     ) -> Result<Vec<Tag>, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
         let req = SetTaskTagsRequest { tag_ids };
-
-        let response = self
-            .client
-            .put(&self.url(&format!(
-                "/workspaces/{}/tasks/{}/tags",
-                workspace_id, task_id
-            )))
-            .header("Authorization", &auth)
-            .json(&req)
-            .send()
-            .await?;
-
+        let response = self.authed_put(
+            &format!("/workspaces/{}/tasks/{}/tags", workspace_id, task_id),
+            &req,
+        ).await?;
         self.handle_response(response).await
     }
 
     pub async fn get_task_tags(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         task_id: Uuid,
     ) -> Result<Vec<Tag>, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .get(&self.url(&format!(
-                "/workspaces/{}/tasks/{}/tags",
-                workspace_id, task_id
-            )))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+        let response = self.authed_get(
+            &format!("/workspaces/{}/tasks/{}/tags", workspace_id, task_id),
+        ).await?;
         self.handle_response(response).await
     }
 
     // ============ Documents ============
 
-    pub async fn list_documents(&self, workspace_id: Uuid) -> Result<Vec<Document>, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .get(&self.url(&format!("/workspaces/{}/documents", workspace_id)))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+    pub async fn list_documents(&mut self, workspace_id: Uuid) -> Result<Vec<Document>, ApiError> {
+        let response = self.authed_get(&format!("/workspaces/{}/documents", workspace_id)).await?;
         self.handle_response(response).await
     }
 
     pub async fn get_document(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         doc_id: Uuid,
     ) -> Result<Document, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .get(&self.url(&format!(
-                "/workspaces/{}/documents/{}",
-                workspace_id, doc_id
-            )))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+        let response = self.authed_get(
+            &format!("/workspaces/{}/documents/{}", workspace_id, doc_id),
+        ).await?;
         self.handle_response(response).await
     }
 
     pub async fn create_document(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         req: CreateDocumentRequest,
     ) -> Result<Document, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .post(&self.url(&format!("/workspaces/{}/documents", workspace_id)))
-            .header("Authorization", &auth)
-            .json(&req)
-            .send()
-            .await?;
-
+        let response = self.authed_post(
+            &format!("/workspaces/{}/documents", workspace_id),
+            &req,
+        ).await?;
         self.handle_response(response).await
     }
 
     pub async fn update_document(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         doc_id: Uuid,
         req: UpdateDocumentRequest,
     ) -> Result<Document, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .patch(&self.url(&format!(
-                "/workspaces/{}/documents/{}",
-                workspace_id, doc_id
-            )))
-            .header("Authorization", &auth)
-            .json(&req)
-            .send()
-            .await?;
-
+        let response = self.authed_patch(
+            &format!("/workspaces/{}/documents/{}", workspace_id, doc_id),
+            &req,
+        ).await?;
         self.handle_response(response).await
     }
 
-    pub async fn delete_document(&self, workspace_id: Uuid, doc_id: Uuid) -> Result<(), ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .delete(&self.url(&format!(
-                "/workspaces/{}/documents/{}",
-                workspace_id, doc_id
-            )))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+    pub async fn delete_document(&mut self, workspace_id: Uuid, doc_id: Uuid) -> Result<(), ApiError> {
+        let response = self.authed_delete(
+            &format!("/workspaces/{}/documents/{}", workspace_id, doc_id),
+        ).await?;
         self.handle_empty_response(response).await
     }
 
     // ============ Task-Document Links ============
 
     pub async fn list_linked_documents(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         task_id: Uuid,
     ) -> Result<Vec<LinkedDocument>, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .get(&self.url(&format!(
-                "/workspaces/{}/tasks/{}/documents",
-                workspace_id, task_id
-            )))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+        let response = self.authed_get(
+            &format!("/workspaces/{}/tasks/{}/documents", workspace_id, task_id),
+        ).await?;
         self.handle_response(response).await
     }
 
     pub async fn list_linked_tasks(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         doc_id: Uuid,
     ) -> Result<Vec<LinkedTask>, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .get(&self.url(&format!(
-                "/workspaces/{}/documents/{}/tasks",
-                workspace_id, doc_id
-            )))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+        let response = self.authed_get(
+            &format!("/workspaces/{}/documents/{}/tasks", workspace_id, doc_id),
+        ).await?;
         self.handle_response(response).await
     }
 
     pub async fn link_task_to_document(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         doc_id: Uuid,
         task_id: Uuid,
     ) -> Result<LinkedTask, ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
         let req = LinkTaskRequest { task_id };
-
-        let response = self
-            .client
-            .post(&self.url(&format!(
-                "/workspaces/{}/documents/{}/tasks",
-                workspace_id, doc_id
-            )))
-            .header("Authorization", &auth)
-            .json(&req)
-            .send()
-            .await?;
-
+        let response = self.authed_post(
+            &format!("/workspaces/{}/documents/{}/tasks", workspace_id, doc_id),
+            &req,
+        ).await?;
         self.handle_response(response).await
     }
 
     pub async fn unlink_task_from_document(
-        &self,
+        &mut self,
         workspace_id: Uuid,
         doc_id: Uuid,
         task_id: Uuid,
     ) -> Result<(), ApiError> {
-        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
-
-        let response = self
-            .client
-            .delete(&self.url(&format!(
-                "/workspaces/{}/documents/{}/tasks/{}",
-                workspace_id, doc_id, task_id
-            )))
-            .header("Authorization", &auth)
-            .send()
-            .await?;
-
+        let response = self.authed_delete(
+            &format!("/workspaces/{}/documents/{}/tasks/{}", workspace_id, doc_id, task_id),
+        ).await?;
         self.handle_empty_response(response).await
     }
 }

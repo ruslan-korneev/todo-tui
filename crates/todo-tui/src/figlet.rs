@@ -27,11 +27,11 @@ pub fn render(text: &str) -> Vec<String> {
 fn get_glyph(ch: char) -> [&'static str; 5] {
     match ch.to_ascii_lowercase() {
         'a' => [
+            "       ",
             "  __ _ ",
             " / _` |",
             "| (_| |",
             " \\__,_|",
-            "       ",
         ],
         'b' => [
             " _     ",
@@ -55,11 +55,11 @@ fn get_glyph(ch: char) -> [&'static str; 5] {
             " \\__,_|",
         ],
         'e' => [
+            "      ",
             "  ___ ",
             " / _ \\",
             "|  __/",
             " \\___|",
-            "      ",
         ],
         'f' => [
             "  __ ",
@@ -125,11 +125,11 @@ fn get_glyph(ch: char) -> [&'static str; 5] {
             "|_| |_|",
         ],
         'o' => [
+            "       ",
             "  ___  ",
             " / _ \\ ",
             "| (_) |",
             " \\___/ ",
-            "       ",
         ],
         'p' => [
             "      ",

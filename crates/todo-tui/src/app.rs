@@ -164,6 +164,14 @@ impl HomeMenuItem {
     }
 }
 
+/// Knowledge Base panel focus
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KbFocus {
+    #[default]
+    Tree,    // Left panel - document tree
+    Content, // Right panel - document content
+}
+
 /// Sort field options for the filter panel
 pub const SORT_FIELDS: &[(&str, &str)] = &[
     ("position", "Position"),
@@ -338,6 +346,8 @@ pub struct App {
     pub kb_create_title: String,
     pub kb_create_parent_id: Option<uuid::Uuid>,
     pub kb_confirming_delete: bool,
+    pub kb_focus: KbFocus,
+    pub kb_scroll_offset: usize,
 
     // Task-Document linking state
     pub task_linked_documents: Vec<todo_shared::api::LinkedDocument>,
@@ -483,6 +493,8 @@ impl App {
             kb_create_title: String::new(),
             kb_create_parent_id: None,
             kb_confirming_delete: false,
+            kb_focus: KbFocus::Tree,
+            kb_scroll_offset: 0,
 
             task_linked_documents: Vec::new(),
             kb_linked_tasks: Vec::new(),
@@ -3532,61 +3544,31 @@ impl App {
             return Ok(false);
         }
 
-        // Normal mode navigation
+        // Global keys (work in both panels)
         match key.code {
             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Open workspace modal (Ctrl+W)
                 self.open_workspace_modal().await;
+                return Ok(false);
             }
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Backspace => {
-                // Return to Home
                 self.view = View::Home;
                 self.kb_selected_doc = None;
+                self.kb_focus = KbFocus::Tree;
+                self.kb_scroll_offset = 0;
+                return Ok(false);
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.kb_visible_list.is_empty() {
-                    self.kb_selected_idx = (self.kb_selected_idx + 1).min(self.kb_visible_list.len() - 1);
-                    self.kb_selected_doc = self.kb_visible_list.get(self.kb_selected_idx).map(|(d, _)| d.clone());
-                    self.load_kb_linked_tasks().await;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if self.kb_selected_idx > 0 {
-                    self.kb_selected_idx -= 1;
-                    self.kb_selected_doc = self.kb_visible_list.get(self.kb_selected_idx).map(|(d, _)| d.clone());
-                    self.load_kb_linked_tasks().await;
-                }
-            }
-            KeyCode::Char('l') | KeyCode::Right | KeyCode::Tab => {
-                // Expand node (any doc can be expanded to create children under it)
-                if let Some((doc, _)) = self.kb_visible_list.get(self.kb_selected_idx) {
-                    if !self.kb_expanded.contains(&doc.id) {
-                        self.kb_expanded.insert(doc.id);
-                        self.build_kb_visible_list();
-                    }
-                }
-            }
-            KeyCode::Char('h') | KeyCode::Left | KeyCode::BackTab => {
-                // Collapse node or go to parent
-                if let Some((doc, _)) = self.kb_visible_list.get(self.kb_selected_idx).cloned() {
-                    if self.kb_expanded.contains(&doc.id) {
-                        // Collapse
-                        self.kb_expanded.remove(&doc.id);
-                        self.build_kb_visible_list();
-                    } else if let Some(parent_id) = doc.parent_id {
-                        // Go to parent
-                        if let Some(pos) = self.kb_visible_list.iter().position(|(d, _)| d.id == parent_id) {
-                            self.kb_selected_idx = pos;
-                            self.kb_selected_doc = self.kb_visible_list.get(pos).map(|(d, _)| d.clone());
-                        }
-                    }
-                }
+            KeyCode::Tab => {
+                // Switch focus between Tree and Content
+                self.kb_focus = match self.kb_focus {
+                    KbFocus::Tree => KbFocus::Content,
+                    KbFocus::Content => KbFocus::Tree,
+                };
+                return Ok(false);
             }
             KeyCode::Char('n') => {
-                // Create new document
+                // Create new document (global)
                 self.kb_creating = true;
                 self.kb_create_title.clear();
-                // Use current doc as parent if expanded, otherwise sibling
                 if let Some((doc, _)) = self.kb_visible_list.get(self.kb_selected_idx) {
                     if self.kb_expanded.contains(&doc.id) {
                         self.kb_create_parent_id = Some(doc.id);
@@ -3595,41 +3577,107 @@ impl App {
                     }
                 }
                 self.vim_mode = VimMode::Insert;
-            }
-            KeyCode::Char('e') => {
-                // Edit current document
-                if let Some(doc) = &self.kb_selected_doc {
-                    self.kb_editing = true;
-                    self.kb_edit_title = doc.title.clone();
-                    self.kb_edit_content = doc.content.clone().unwrap_or_default();
-                    self.vim_mode = VimMode::Insert;
-                }
-            }
-            KeyCode::Char('d') => {
-                // Delete document
-                if self.kb_selected_doc.is_some() {
-                    self.kb_confirming_delete = true;
-                }
-            }
-            KeyCode::Enter => {
-                // Refresh the selected document content
-                if let Some((doc, _)) = self.kb_visible_list.get(self.kb_selected_idx) {
-                    self.kb_selected_doc = Some(doc.clone());
-                }
-            }
-            KeyCode::Char('L') => {
-                // Link task to document
-                if self.kb_selected_doc.is_some() {
-                    self.open_link_task_picker().await;
-                }
-            }
-            KeyCode::Char('U') => {
-                // Unlink task from document
-                if !self.kb_linked_tasks.is_empty() {
-                    self.unlink_task_from_kb().await;
-                }
+                return Ok(false);
             }
             _ => {}
+        }
+
+        // Focus-specific keys
+        match self.kb_focus {
+            KbFocus::Tree => {
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if !self.kb_visible_list.is_empty() {
+                            self.kb_selected_idx = (self.kb_selected_idx + 1).min(self.kb_visible_list.len() - 1);
+                            self.kb_selected_doc = self.kb_visible_list.get(self.kb_selected_idx).map(|(d, _)| d.clone());
+                            self.kb_scroll_offset = 0; // Reset scroll when selecting new doc
+                            self.load_kb_linked_tasks().await;
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        if self.kb_selected_idx > 0 {
+                            self.kb_selected_idx -= 1;
+                            self.kb_selected_doc = self.kb_visible_list.get(self.kb_selected_idx).map(|(d, _)| d.clone());
+                            self.kb_scroll_offset = 0; // Reset scroll when selecting new doc
+                            self.load_kb_linked_tasks().await;
+                        }
+                    }
+                    KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
+                        // Expand node
+                        if let Some((doc, _)) = self.kb_visible_list.get(self.kb_selected_idx) {
+                            if !self.kb_expanded.contains(&doc.id) {
+                                self.kb_expanded.insert(doc.id);
+                                self.build_kb_visible_list();
+                            }
+                        }
+                    }
+                    KeyCode::Char('h') | KeyCode::Left => {
+                        // Collapse node or go to parent
+                        if let Some((doc, _)) = self.kb_visible_list.get(self.kb_selected_idx).cloned() {
+                            if self.kb_expanded.contains(&doc.id) {
+                                self.kb_expanded.remove(&doc.id);
+                                self.build_kb_visible_list();
+                            } else if let Some(parent_id) = doc.parent_id {
+                                if let Some(pos) = self.kb_visible_list.iter().position(|(d, _)| d.id == parent_id) {
+                                    self.kb_selected_idx = pos;
+                                    self.kb_selected_doc = self.kb_visible_list.get(pos).map(|(d, _)| d.clone());
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Char('e') => {
+                        if let Some(doc) = &self.kb_selected_doc {
+                            self.kb_editing = true;
+                            self.kb_edit_title = doc.title.clone();
+                            self.kb_edit_content = doc.content.clone().unwrap_or_default();
+                            self.vim_mode = VimMode::Insert;
+                        }
+                    }
+                    KeyCode::Char('d') => {
+                        if self.kb_selected_doc.is_some() {
+                            self.kb_confirming_delete = true;
+                        }
+                    }
+                    KeyCode::Char('L') => {
+                        if self.kb_selected_doc.is_some() {
+                            self.open_link_task_picker().await;
+                        }
+                    }
+                    KeyCode::Char('U') => {
+                        if !self.kb_linked_tasks.is_empty() {
+                            self.unlink_task_from_kb().await;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            KbFocus::Content => {
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        self.kb_scroll_offset = self.kb_scroll_offset.saturating_add(1);
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        self.kb_scroll_offset = self.kb_scroll_offset.saturating_sub(1);
+                    }
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // Scroll down half page (10 lines)
+                        self.kb_scroll_offset = self.kb_scroll_offset.saturating_add(10);
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // Scroll up half page (10 lines)
+                        self.kb_scroll_offset = self.kb_scroll_offset.saturating_sub(10);
+                    }
+                    KeyCode::Char('g') => {
+                        // Scroll to top
+                        self.kb_scroll_offset = 0;
+                    }
+                    KeyCode::Char('G') => {
+                        // Scroll to bottom (will be clamped in UI)
+                        self.kb_scroll_offset = usize::MAX;
+                    }
+                    _ => {}
+                }
+            }
         }
 
         Ok(false)

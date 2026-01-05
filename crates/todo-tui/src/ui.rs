@@ -6,7 +6,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AuthMode, DueDateMode, FilterPanelSection, InputField, NewTaskField, TaskEditField, View, VimMode, SORT_FIELDS};
+use crate::app::{App, AuthMode, DueDateMode, FilterPanelSection, InputField, KbFocus, NewTaskField, TaskEditField, View, VimMode, SORT_FIELDS};
+use crate::markdown;
 use todo_shared::api::SearchResultItem;
 use todo_shared::Priority;
 
@@ -677,6 +678,13 @@ fn draw_home_logo(f: &mut Frame, area: Rect, app: &App) {
 
     let ascii_lines = crate::figlet::render(workspace_name);
 
+    // Calculate the width of the ASCII art (max line length)
+    let ascii_width = ascii_lines.iter().map(|s| s.len()).max().unwrap_or(0) as u16;
+
+    // Center the ASCII art block horizontally
+    let x_offset = area.x + area.width.saturating_sub(ascii_width) / 2;
+    let centered_area = Rect::new(x_offset, area.y, ascii_width.min(area.width), area.height);
+
     let lines: Vec<Line> = ascii_lines
         .into_iter()
         .map(|s| {
@@ -687,15 +695,9 @@ fn draw_home_logo(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    let block = Block::default()
-        .borders(Borders::NONE);
-
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let paragraph = Paragraph::new(lines)
-        .alignment(Alignment::Center);
-    f.render_widget(paragraph, inner);
+    // Use left alignment to preserve ASCII art internal alignment
+    let paragraph = Paragraph::new(lines);
+    f.render_widget(paragraph, centered_area);
 }
 
 fn draw_home_quote(f: &mut Frame, area: Rect, app: &App) {
@@ -2798,10 +2800,13 @@ fn draw_knowledge_base(f: &mut Frame, app: &App) {
 }
 
 fn draw_document_tree(f: &mut Frame, area: Rect, app: &App) {
+    let is_focused = app.kb_focus == KbFocus::Tree;
+    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+
     let block = Block::default()
         .title(" Documents ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -2863,13 +2868,8 @@ fn draw_document_content(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let block = Block::default()
-        .title(" Content ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
-
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let is_focused = app.kb_focus == KbFocus::Content;
+    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
 
     match &app.kb_selected_doc {
         Some(doc) => {
@@ -2880,44 +2880,62 @@ fn draw_document_content(f: &mut Frame, area: Rect, app: &App) {
                 (2 + app.kb_linked_tasks.len().min(5)) as u16 // Header + up to 5 tasks
             };
 
+            // Render markdown content to calculate total height
+            let content_width = area.width.saturating_sub(4) as usize;
+            let content_text = doc.content.as_deref().unwrap_or("");
+            let all_content_lines = if content_text.is_empty() {
+                vec![Line::from(Span::styled(
+                    "(No content)",
+                    Style::default().fg(Color::DarkGray),
+                ))]
+            } else {
+                markdown::render_markdown(content_text, content_width)
+            };
+
+            let total_lines = all_content_lines.len();
+            let visible_height = area.height.saturating_sub(4 + linked_tasks_height) as usize;
+
+            // Clamp scroll offset to valid range
+            let max_scroll = total_lines.saturating_sub(visible_height);
+            let scroll_offset = app.kb_scroll_offset.min(max_scroll);
+
+            // Build scroll position indicator
+            let scroll_indicator = if total_lines <= visible_height {
+                String::new()
+            } else if scroll_offset == 0 {
+                " [Top]".to_string()
+            } else if scroll_offset >= max_scroll {
+                " [Bot]".to_string()
+            } else {
+                format!(" [{}%]", scroll_offset * 100 / max_scroll)
+            };
+
+            let title = format!(" {} {}", doc.title, scroll_indicator);
+            let block = Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color));
+
+            let inner = block.inner(area);
+            f.render_widget(block, area);
+
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(2),                    // Title
                     Constraint::Min(3),                       // Content
                     Constraint::Length(linked_tasks_height),  // Linked Tasks
                 ])
                 .split(inner);
 
-            // Document title
-            let title = Paragraph::new(Line::from(vec![
-                Span::styled("# ", Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    &doc.title,
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
-            f.render_widget(title, chunks[0]);
-
-            // Document content with text wrapping
-            let content_width = chunks[1].width.saturating_sub(2) as usize;
-            let content_text = doc.content.as_deref().unwrap_or("(No content)");
-            let wrapped_lines = wrap_text(content_text, content_width);
-
-            let content_lines: Vec<Line> = wrapped_lines
-                .iter()
-                .map(|line| Line::from(Span::raw(line.clone())))
+            // Apply scroll offset and render visible lines
+            let visible_lines: Vec<Line> = all_content_lines
+                .into_iter()
+                .skip(scroll_offset)
+                .take(visible_height)
                 .collect();
 
-            let content = Paragraph::new(content_lines)
-                .style(Style::default().fg(if doc.content.is_some() {
-                    Color::White
-                } else {
-                    Color::DarkGray
-                }));
-            f.render_widget(content, chunks[1]);
+            let content = Paragraph::new(visible_lines);
+            f.render_widget(content, chunks[0]);
 
             // Linked Tasks section
             let mut linked_lines = vec![
@@ -2946,9 +2964,17 @@ fn draw_document_content(f: &mut Frame, area: Rect, app: &App) {
                 }
             }
             let linked_tasks = Paragraph::new(linked_lines);
-            f.render_widget(linked_tasks, chunks[2]);
+            f.render_widget(linked_tasks, chunks[1]);
         }
         None => {
+            let block = Block::default()
+                .title(" Content ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color));
+
+            let inner = block.inner(area);
+            f.render_widget(block, area);
+
             let empty = Paragraph::new("Select a document to view its content")
                 .style(Style::default().fg(Color::DarkGray))
                 .alignment(Alignment::Center);

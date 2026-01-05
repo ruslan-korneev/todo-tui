@@ -44,3 +44,7 @@ urlencoding = "2"
 
 # JWT decoding for token expiry check
 base64.workspace = true
+
+# Markdown rendering
+pulldown-cmark = "0.10"
+syntect = "5.2"

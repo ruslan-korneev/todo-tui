@@ -5,8 +5,10 @@ use std::collections::HashSet;
 use todo_shared::api::{CreateDocumentRequest, CreateTaskRequest, SearchResultItem, TaskListParams, UpdateDocumentRequest, UpdateTaskRequest, WorkspaceMemberWithUser};
 use todo_shared::{CommentWithAuthor, Document, Priority, Tag, Task, TaskStatus, User, Workspace, WorkspaceWithRole};
 use tokio::sync::mpsc;
+use tui_textarea::TextArea;
 
 use crate::api::{ApiClient, UserPreferences, WorkspaceState};
+use crate::editor::{self, EditorContext};
 
 /// Preset colors for tags (hex format)
 pub const TAG_COLORS: &[&str] = &[
@@ -250,12 +252,12 @@ pub struct App {
     pub selected_task_detail: Option<Task>,
     pub task_comments: Vec<CommentWithAuthor>,
     pub adding_comment: bool,
-    pub new_comment_content: String,
+    pub comment_textarea: Option<TextArea<'static>>,
 
     // Create task state
     pub creating_task: bool,
     pub new_task_title: String,
-    pub new_task_description: String,
+    pub new_task_description_textarea: Option<TextArea<'static>>,
     pub new_task_field: NewTaskField,
 
     // Delete task state
@@ -265,7 +267,7 @@ pub struct App {
     pub editing_task: bool,
     pub edit_field: TaskEditField,
     pub edit_task_title: String,
-    pub edit_task_description: String,
+    pub edit_task_description_textarea: Option<TextArea<'static>>,
     pub edit_task_priority: Option<Priority>,
     pub edit_task_due_date_str: String,
     pub edit_task_time_estimate_str: String,
@@ -340,7 +342,7 @@ pub struct App {
     pub kb_expanded: HashSet<uuid::Uuid>,
     pub kb_selected_doc: Option<Document>,
     pub kb_editing: bool,
-    pub kb_edit_content: String,
+    pub kb_content_textarea: Option<TextArea<'static>>,
     pub kb_edit_title: String,
     pub kb_creating: bool,
     pub kb_create_title: String,
@@ -369,6 +371,9 @@ pub struct App {
     // Help state
     pub help_visible: bool,
     pub help_scroll: usize,
+
+    // Terminal clear flag (set after external editor)
+    pub needs_terminal_clear: bool,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -425,16 +430,16 @@ impl App {
             selected_task_detail: None,
             task_comments: Vec::new(),
             adding_comment: false,
-            new_comment_content: String::new(),
+            comment_textarea: None,
             creating_task: false,
             new_task_title: String::new(),
-            new_task_description: String::new(),
+            new_task_description_textarea: None,
             new_task_field: NewTaskField::Title,
             confirming_delete: false,
             editing_task: false,
             edit_field: TaskEditField::Title,
             edit_task_title: String::new(),
-            edit_task_description: String::new(),
+            edit_task_description_textarea: None,
             edit_task_priority: None,
             edit_task_due_date_str: String::new(),
             edit_task_time_estimate_str: String::new(),
@@ -487,7 +492,7 @@ impl App {
             kb_expanded: HashSet::new(),
             kb_selected_doc: None,
             kb_editing: false,
-            kb_edit_content: String::new(),
+            kb_content_textarea: None,
             kb_edit_title: String::new(),
             kb_creating: false,
             kb_create_title: String::new(),
@@ -512,6 +517,8 @@ impl App {
 
             help_visible: false,
             help_scroll: 0,
+
+            needs_terminal_clear: false,
         }
     }
 
@@ -531,6 +538,63 @@ impl App {
             || self.inviting_member
             || (self.tag_management_visible && self.tag_management_mode != TagManagementMode::List)
             || self.creating_preset
+    }
+
+    // ========== TextArea Lifecycle Methods ==========
+
+    /// Initialize textarea for comment input
+    fn init_comment_textarea(&mut self) {
+        self.comment_textarea = Some(editor::create_textarea("", EditorContext::Comment));
+    }
+
+    /// Initialize textarea for new task description
+    fn init_new_task_description_textarea(&mut self) {
+        self.new_task_description_textarea =
+            Some(editor::create_textarea("", EditorContext::NewTaskDescription));
+    }
+
+    /// Initialize textarea for editing task description
+    fn init_edit_task_description_textarea(&mut self, content: &str) {
+        self.edit_task_description_textarea =
+            Some(editor::create_textarea(content, EditorContext::TaskDescription));
+    }
+
+    /// Initialize textarea for document content
+    fn init_kb_content_textarea(&mut self, content: &str) {
+        self.kb_content_textarea =
+            Some(editor::create_textarea(content, EditorContext::DocumentContent));
+    }
+
+    /// Get current comment textarea content as String
+    fn get_comment_content(&self) -> String {
+        self.comment_textarea
+            .as_ref()
+            .map(editor::textarea_content)
+            .unwrap_or_default()
+    }
+
+    /// Get current new task description as String
+    fn get_new_task_description(&self) -> String {
+        self.new_task_description_textarea
+            .as_ref()
+            .map(editor::textarea_content)
+            .unwrap_or_default()
+    }
+
+    /// Get current edit task description as String
+    fn get_edit_task_description(&self) -> String {
+        self.edit_task_description_textarea
+            .as_ref()
+            .map(editor::textarea_content)
+            .unwrap_or_default()
+    }
+
+    /// Get current KB document content as String
+    fn get_kb_content(&self) -> String {
+        self.kb_content_textarea
+            .as_ref()
+            .map(editor::textarea_content)
+            .unwrap_or_default()
     }
 
     pub fn set_error(&mut self, message: String) {
@@ -982,17 +1046,67 @@ impl App {
 
         // Handle create task popup
         if self.creating_task {
+            // Description field uses TextArea
+            if self.new_task_field == NewTaskField::Description {
+                if let Some(ref mut textarea) = self.new_task_description_textarea {
+                    match key.code {
+                        KeyCode::Esc => {
+                            self.creating_task = false;
+                            self.new_task_title.clear();
+                            self.new_task_description_textarea = None;
+                            self.new_task_field = NewTaskField::Title;
+                            self.vim_mode = VimMode::Normal;
+                        }
+                        KeyCode::Tab | KeyCode::BackTab => {
+                            self.new_task_field = NewTaskField::Title;
+                        }
+                        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+                            if !self.new_task_title.is_empty() {
+                                self.do_create_task().await;
+                            }
+                        }
+                        KeyCode::Char('e') | KeyCode::Char('E') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            // Ctrl+E: external editor
+                            let content = self.get_new_task_description();
+                            match editor::launch_external_editor(&content, ".md") {
+                                Ok(edited) => {
+                                    self.needs_terminal_clear = true;
+                                    self.new_task_description_textarea = Some(
+                                        editor::create_textarea(&edited, EditorContext::NewTaskDescription),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.needs_terminal_clear = true;
+                                    self.set_error(format!("Editor failed: {}", e));
+                                }
+                            }
+                        }
+                        _ => {
+                            textarea.input(key);
+                        }
+                    }
+                    return Ok(false);
+                }
+            }
+
+            // Title field uses simple string input
             match key.code {
                 KeyCode::Esc => {
                     self.creating_task = false;
                     self.new_task_title.clear();
-                    self.new_task_description.clear();
+                    self.new_task_description_textarea = None;
                     self.new_task_field = NewTaskField::Title;
                     self.vim_mode = VimMode::Normal;
                 }
                 KeyCode::Tab | KeyCode::BackTab => {
                     self.new_task_field = match self.new_task_field {
-                        NewTaskField::Title => NewTaskField::Description,
+                        NewTaskField::Title => {
+                            // Initialize textarea when switching to description
+                            if self.new_task_description_textarea.is_none() {
+                                self.init_new_task_description_textarea();
+                            }
+                            NewTaskField::Description
+                        }
                         NewTaskField::Description => NewTaskField::Title,
                     };
                 }
@@ -1002,15 +1116,13 @@ impl App {
                     }
                 }
                 KeyCode::Char(c) => {
-                    match self.new_task_field {
-                        NewTaskField::Title => self.new_task_title.push(c),
-                        NewTaskField::Description => self.new_task_description.push(c),
+                    if self.new_task_field == NewTaskField::Title {
+                        self.new_task_title.push(c);
                     }
                 }
                 KeyCode::Backspace => {
-                    match self.new_task_field {
-                        NewTaskField::Title => { self.new_task_title.pop(); }
-                        NewTaskField::Description => { self.new_task_description.pop(); }
+                    if self.new_task_field == NewTaskField::Title {
+                        self.new_task_title.pop();
                     }
                 }
                 _ => {}
@@ -2211,28 +2323,44 @@ impl App {
             return self.handle_unlink_document_key(key).await;
         }
 
-        // Handle comment input mode
+        // Handle comment input mode with TextArea
         if self.adding_comment {
-            match key.code {
-                KeyCode::Esc => {
-                    self.adding_comment = false;
-                    self.new_comment_content.clear();
-                    self.vim_mode = VimMode::Normal;
-                }
-                KeyCode::Enter => {
-                    if !self.new_comment_content.is_empty() {
-                        self.do_add_comment().await;
+            if let Some(ref mut textarea) = self.comment_textarea {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.adding_comment = false;
+                        self.comment_textarea = None;
+                        self.vim_mode = VimMode::Normal;
+                    }
+                    KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+                        // Alt+Enter to submit
+                        let content = self.get_comment_content();
+                        if !content.is_empty() {
+                            self.do_add_comment().await;
+                        }
+                    }
+                    KeyCode::Char('e') | KeyCode::Char('E') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // Ctrl+E: external editor
+                        let content = self.get_comment_content();
+                        match editor::launch_external_editor(&content, ".md") {
+                            Ok(edited) => {
+                                self.needs_terminal_clear = true;
+                                self.comment_textarea =
+                                    Some(editor::create_textarea(&edited, EditorContext::Comment));
+                            }
+                            Err(e) => {
+                                self.needs_terminal_clear = true;
+                                self.set_error(format!("Editor failed: {}", e));
+                            }
+                        }
+                    }
+                    _ => {
+                        // Pass to textarea for normal input handling
+                        textarea.input(key);
                     }
                 }
-                KeyCode::Char(c) => {
-                    self.new_comment_content.push(c);
-                }
-                KeyCode::Backspace => {
-                    self.new_comment_content.pop();
-                }
-                _ => {}
+                return Ok(false);
             }
-            return Ok(false);
         }
 
         match key.code {
@@ -2242,6 +2370,7 @@ impl App {
             KeyCode::Char('a') => {
                 // Add comment
                 self.adding_comment = true;
+                self.init_comment_textarea();
                 self.vim_mode = VimMode::Insert;
             }
             KeyCode::Char('e') => {
@@ -2425,6 +2554,39 @@ impl App {
     async fn handle_edit_task_key(&mut self, key: KeyEvent) -> Result<bool> {
         // Insert mode - editing current field
         if self.vim_mode == VimMode::Insert {
+            // Special handling for description field with TextArea
+            if self.edit_field == TaskEditField::Description {
+                if let Some(ref mut textarea) = self.edit_task_description_textarea {
+                    match key.code {
+                        KeyCode::Esc => {
+                            self.vim_mode = VimMode::Normal;
+                        }
+                        KeyCode::Char('e') | KeyCode::Char('E') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            // Ctrl+E: external editor
+                            let content = self.get_edit_task_description();
+                            match editor::launch_external_editor(&content, ".md") {
+                                Ok(edited) => {
+                                    self.needs_terminal_clear = true;
+                                    self.edit_task_description_textarea = Some(
+                                        editor::create_textarea(&edited, EditorContext::TaskDescription),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.needs_terminal_clear = true;
+                                    self.set_error(format!("Editor failed: {}", e));
+                                }
+                            }
+                        }
+                        _ => {
+                            // Pass to textarea for normal input handling
+                            textarea.input(key);
+                        }
+                    }
+                    return Ok(false);
+                }
+            }
+
+            // Other fields use simple string handling
             match key.code {
                 KeyCode::Esc => {
                     self.vim_mode = VimMode::Normal;
@@ -2436,16 +2598,16 @@ impl App {
                 KeyCode::Char(c) => {
                     match self.edit_field {
                         TaskEditField::Title => self.edit_task_title.push(c),
-                        TaskEditField::Description => self.edit_task_description.push(c),
+                        TaskEditField::Description => {} // Handled above with TextArea
                         TaskEditField::DueDate => self.edit_task_due_date_str.push(c),
                         TaskEditField::TimeEstimate => self.edit_task_time_estimate_str.push(c),
-                        TaskEditField::Priority | TaskEditField::Assignee | TaskEditField::Tags => {} // Uses h/l or space, not text input
+                        TaskEditField::Priority | TaskEditField::Assignee | TaskEditField::Tags => {}
                     }
                 }
                 KeyCode::Backspace => {
                     match self.edit_field {
                         TaskEditField::Title => { self.edit_task_title.pop(); }
-                        TaskEditField::Description => { self.edit_task_description.pop(); }
+                        TaskEditField::Description => {} // Handled above with TextArea
                         TaskEditField::DueDate => { self.edit_task_due_date_str.pop(); }
                         TaskEditField::TimeEstimate => { self.edit_task_time_estimate_str.pop(); }
                         TaskEditField::Priority | TaskEditField::Assignee | TaskEditField::Tags => {}
@@ -3196,7 +3358,7 @@ impl App {
         self.task_comments.clear();
         self.task_linked_documents.clear();
         self.adding_comment = false;
-        self.new_comment_content.clear();
+        self.comment_textarea = None;
         self.linking_document_mode = false;
         self.link_document_cursor = 0;
         self.unlinking_document_mode = false;
@@ -3216,12 +3378,12 @@ impl App {
             None => return,
         };
 
-        let content = self.new_comment_content.clone();
+        let content = self.get_comment_content();
 
         match self.api.create_comment(workspace_id, task_id, &content).await {
             Ok(comment) => {
                 self.task_comments.push(comment);
-                self.new_comment_content.clear();
+                self.comment_textarea = None;
                 self.adding_comment = false;
                 self.vim_mode = VimMode::Normal;
             }
@@ -3249,13 +3411,14 @@ impl App {
             .and_then(|ws| ws.settings.default_assignee)
             .or_else(|| self.user.as_ref().map(|u| u.id));
 
+        let description = self.get_new_task_description();
         let req = CreateTaskRequest {
             title: self.new_task_title.clone(),
             status_id,
-            description: if self.new_task_description.is_empty() {
+            description: if description.is_empty() {
                 None
             } else {
-                Some(self.new_task_description.clone())
+                Some(description)
             },
             priority: None,
             due_date: None,
@@ -3277,7 +3440,7 @@ impl App {
                 // Clear form
                 self.creating_task = false;
                 self.new_task_title.clear();
-                self.new_task_description.clear();
+                self.new_task_description_textarea = None;
                 self.new_task_field = NewTaskField::Title;
                 self.vim_mode = VimMode::Normal;
             }
@@ -3323,19 +3486,29 @@ impl App {
     }
 
     fn enter_edit_mode(&mut self) {
-        if let Some(ref task) = self.selected_task_detail {
+        // Extract all values first to avoid borrow conflicts
+        let task_data = self.selected_task_detail.as_ref().map(|task| {
+            (
+                task.title.clone(),
+                task.description.clone().unwrap_or_default(),
+                task.priority,
+                task.due_date.map(|d| d.to_string()).unwrap_or_default(),
+                task.time_estimate_minutes.map(|m| m.to_string()).unwrap_or_default(),
+                task.assigned_to,
+                task.tags.iter().map(|t| t.id).collect::<Vec<_>>(),
+            )
+        });
+
+        if let Some((title, description, priority, due_date, time_estimate, assignee, tags)) = task_data {
             self.editing_task = true;
             self.edit_field = TaskEditField::Title;
-            self.edit_task_title = task.title.clone();
-            self.edit_task_description = task.description.clone().unwrap_or_default();
-            self.edit_task_priority = task.priority;
-            self.edit_task_due_date_str = task.due_date.map(|d| d.to_string()).unwrap_or_default();
-            self.edit_task_time_estimate_str = task.time_estimate_minutes
-                .map(|m| m.to_string())
-                .unwrap_or_default();
-            self.edit_task_assignee = task.assigned_to;
-            // Populate selected tags from current task
-            self.task_edit_selected_tags = task.tags.iter().map(|t| t.id).collect();
+            self.edit_task_title = title;
+            self.init_edit_task_description_textarea(&description);
+            self.edit_task_priority = priority;
+            self.edit_task_due_date_str = due_date;
+            self.edit_task_time_estimate_str = time_estimate;
+            self.edit_task_assignee = assignee;
+            self.task_edit_selected_tags = tags;
             self.tag_selector_cursor = 0;
         }
     }
@@ -3415,13 +3588,14 @@ impl App {
         due_date: Option<NaiveDate>,
         time_estimate_minutes: Option<i32>,
     ) -> Result<Task, crate::api::ApiError> {
+        let description = self.get_edit_task_description();
         let req = UpdateTaskRequest {
             title: Some(self.edit_task_title.clone()),
             status_id: None,
-            description: if self.edit_task_description.is_empty() {
+            description: if description.is_empty() {
                 None
             } else {
-                Some(self.edit_task_description.clone())
+                Some(description)
             },
             priority: self.edit_task_priority,
             due_date,
@@ -3569,31 +3743,43 @@ impl App {
             return Ok(false);
         }
 
-        // Handle editing document
+        // Handle editing document with TextArea
         if self.kb_editing {
-            match key.code {
-                KeyCode::Esc => {
-                    self.kb_editing = false;
-                    self.kb_edit_title.clear();
-                    self.kb_edit_content.clear();
-                    self.vim_mode = VimMode::Normal;
+            if let Some(ref mut textarea) = self.kb_content_textarea {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.kb_editing = false;
+                        self.kb_edit_title.clear();
+                        self.kb_content_textarea = None;
+                        self.vim_mode = VimMode::Normal;
+                    }
+                    KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+                        // Save on Alt+Enter
+                        self.do_update_document().await;
+                    }
+                    KeyCode::Char('e') | KeyCode::Char('E') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // Ctrl+E: external editor
+                        let content = self.get_kb_content();
+                        match editor::launch_external_editor(&content, ".md") {
+                            Ok(edited) => {
+                                self.needs_terminal_clear = true;
+                                self.kb_content_textarea = Some(
+                                    editor::create_textarea(&edited, EditorContext::DocumentContent),
+                                );
+                            }
+                            Err(e) => {
+                                self.needs_terminal_clear = true;
+                                self.set_error(format!("Editor failed: {}", e));
+                            }
+                        }
+                    }
+                    _ => {
+                        // Pass to textarea for normal input handling
+                        textarea.input(key);
+                    }
                 }
-                KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
-                    // Save on Alt+Enter
-                    self.do_update_document().await;
-                }
-                KeyCode::Enter => {
-                    self.kb_edit_content.push('\n');
-                }
-                KeyCode::Char(c) => {
-                    self.kb_edit_content.push(c);
-                }
-                KeyCode::Backspace => {
-                    self.kb_edit_content.pop();
-                }
-                _ => {}
+                return Ok(false);
             }
-            return Ok(false);
         }
 
         // Global keys (work in both panels)
@@ -3681,7 +3867,8 @@ impl App {
                         if let Some(doc) = &self.kb_selected_doc {
                             self.kb_editing = true;
                             self.kb_edit_title = doc.title.clone();
-                            self.kb_edit_content = doc.content.clone().unwrap_or_default();
+                            let content = doc.content.clone().unwrap_or_default();
+                            self.init_kb_content_textarea(&content);
                             self.vim_mode = VimMode::Insert;
                         }
                     }
@@ -3896,9 +4083,10 @@ impl App {
             None => return,
         };
 
+        let content = self.get_kb_content();
         let req = UpdateDocumentRequest {
             title: Some(self.kb_edit_title.clone()),
-            content: Some(self.kb_edit_content.clone()),
+            content: Some(content),
         };
 
         self.set_loading(true, "Updating document...");
@@ -3913,7 +4101,7 @@ impl App {
                 self.build_kb_visible_list();
                 self.kb_editing = false;
                 self.kb_edit_title.clear();
-                self.kb_edit_content.clear();
+                self.kb_content_textarea = None;
                 self.vim_mode = VimMode::Normal;
             }
             Err(e) => {

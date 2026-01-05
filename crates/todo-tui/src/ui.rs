@@ -1286,20 +1286,30 @@ fn draw_create_task_popup(f: &mut Frame, app: &App) {
     let title_text = Paragraph::new(app.new_task_title.as_str()).block(title_block);
     f.render_widget(title_text, chunks[0]);
 
-    // Description field
+    // Description field (uses TextArea when available)
     let desc_style = if app.new_task_field == NewTaskField::Description {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default().fg(Color::Gray)
     };
-    let desc_block = Block::default()
-        .title(" Description (optional) ")
-        .borders(Borders::ALL)
-        .border_style(desc_style);
-    let desc_text = Paragraph::new(app.new_task_description.as_str())
-        .block(desc_block)
-        .wrap(Wrap { trim: false });
-    f.render_widget(desc_text, chunks[1]);
+
+    if let Some(ref textarea) = app.new_task_description_textarea {
+        // Render TextArea with custom block
+        let desc_block = Block::default()
+            .title(" Description (Ctrl+E: editor, Alt+Enter: create) ")
+            .borders(Borders::ALL)
+            .border_style(desc_style);
+        let inner = desc_block.inner(chunks[1]);
+        f.render_widget(desc_block, chunks[1]);
+        f.render_widget(textarea, inner);
+    } else {
+        let desc_block = Block::default()
+            .title(" Description (optional) ")
+            .borders(Borders::ALL)
+            .border_style(desc_style);
+        let desc_text = Paragraph::new("").block(desc_block);
+        f.render_widget(desc_text, chunks[1]);
+    }
 
     // Hint
     let hint = Paragraph::new("Tab: switch field | Enter: create | Esc: cancel")
@@ -1307,18 +1317,12 @@ fn draw_create_task_popup(f: &mut Frame, app: &App) {
         .alignment(Alignment::Center);
     f.render_widget(hint, chunks[2]);
 
-    // Set cursor position
-    let (cursor_x, cursor_y) = match app.new_task_field {
-        NewTaskField::Title => (
-            chunks[0].x + 1 + app.new_task_title.len() as u16,
-            chunks[0].y + 1,
-        ),
-        NewTaskField::Description => (
-            chunks[1].x + 1 + app.new_task_description.len() as u16,
-            chunks[1].y + 1,
-        ),
-    };
-    f.set_cursor_position((cursor_x, cursor_y));
+    // Set cursor position (only for title field, textarea handles its own cursor)
+    if app.new_task_field == NewTaskField::Title {
+        let cursor_x = chunks[0].x + 1 + app.new_task_title.len() as u16;
+        let cursor_y = chunks[0].y + 1;
+        f.set_cursor_position((cursor_x, cursor_y));
+    }
 }
 
 fn draw_delete_confirm_popup(f: &mut Frame, app: &App) {
@@ -2086,20 +2090,17 @@ fn draw_task_view_mode(f: &mut Frame, area: Rect, app: &App, task: &todo_shared:
 
     f.render_widget(comments_list, inner_chunks[0]);
 
-    // Comment input (if adding)
+    // Comment input (if adding) - uses TextArea
     if app.adding_comment {
-        let input_block = Block::default()
-            .title(" New Comment ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Yellow));
-        let input = Paragraph::new(app.new_comment_content.as_str()).block(input_block);
-        f.render_widget(input, inner_chunks[1]);
-
-        // Set cursor position
-        f.set_cursor_position((
-            inner_chunks[1].x + 1 + app.new_comment_content.len() as u16,
-            inner_chunks[1].y + 1,
-        ));
+        if let Some(ref textarea) = app.comment_textarea {
+            let input_block = Block::default()
+                .title(" New Comment (Ctrl+E: editor, Alt+Enter: submit) ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow));
+            let inner = input_block.inner(inner_chunks[1]);
+            f.render_widget(input_block, inner_chunks[1]);
+            f.render_widget(textarea, inner);
+        }
     }
 }
 
@@ -2147,15 +2148,23 @@ fn draw_task_edit_mode(f: &mut Frame, area: Rect, app: &App) {
     let title_text = Paragraph::new(app.edit_task_title.as_str()).block(title_block);
     f.render_widget(title_text, chunks[0]);
 
-    // Description field
-    let desc_block = Block::default()
-        .title(" Description ")
-        .borders(Borders::ALL)
-        .border_style(field_style(TaskEditField::Description));
-    let desc_text = Paragraph::new(app.edit_task_description.as_str())
-        .block(desc_block)
-        .wrap(Wrap { trim: false });
-    f.render_widget(desc_text, chunks[1]);
+    // Description field (uses TextArea)
+    if let Some(ref textarea) = app.edit_task_description_textarea {
+        let desc_block = Block::default()
+            .title(" Description (Ctrl+E: editor) ")
+            .borders(Borders::ALL)
+            .border_style(field_style(TaskEditField::Description));
+        let inner = desc_block.inner(chunks[1]);
+        f.render_widget(desc_block, chunks[1]);
+        f.render_widget(textarea, inner);
+    } else {
+        let desc_block = Block::default()
+            .title(" Description ")
+            .borders(Borders::ALL)
+            .border_style(field_style(TaskEditField::Description));
+        let desc_text = Paragraph::new("").block(desc_block);
+        f.render_widget(desc_text, chunks[1]);
+    }
 
     // Priority field
     let priority_str = match app.edit_task_priority {
@@ -2247,17 +2256,17 @@ fn draw_task_edit_mode(f: &mut Frame, area: Rect, app: &App) {
     };
     f.render_widget(tags_widget, chunks[6]);
 
-    // Set cursor position if in insert mode (not for Tags field)
-    if app.vim_mode == VimMode::Insert && app.edit_field != TaskEditField::Tags {
+    // Set cursor position if in insert mode (not for Tags or Description fields - TextArea handles its own cursor)
+    if app.vim_mode == VimMode::Insert
+        && app.edit_field != TaskEditField::Tags
+        && app.edit_field != TaskEditField::Description
+    {
         let (cursor_x, cursor_y) = match app.edit_field {
             TaskEditField::Title => (
                 chunks[0].x + 1 + app.edit_task_title.len() as u16,
                 chunks[0].y + 1,
             ),
-            TaskEditField::Description => (
-                chunks[1].x + 1 + app.edit_task_description.len() as u16,
-                chunks[1].y + 1,
-            ),
+            TaskEditField::Description => (chunks[1].x + 1, chunks[1].y + 1), // Not used - TextArea handles cursor
             TaskEditField::Priority => (chunks[2].x + 1, chunks[2].y + 1),
             TaskEditField::DueDate => (
                 chunks[3].x + 1 + app.edit_task_due_date_str.len() as u16,
@@ -3009,21 +3018,25 @@ fn draw_document_editor(f: &mut Frame, area: Rect, app: &App) {
     let title_input = Paragraph::new(app.kb_edit_title.as_str()).block(title_block);
     f.render_widget(title_input, chunks[0]);
 
-    // Content input
-    let content_block = Block::default()
-        .title(" Content ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Gray));
-    let content_input = Paragraph::new(app.kb_edit_content.as_str())
-        .block(content_block)
-        .wrap(Wrap { trim: false });
-    f.render_widget(content_input, chunks[1]);
+    // Content input (uses TextArea)
+    if let Some(ref textarea) = app.kb_content_textarea {
+        let content_block = Block::default()
+            .title(" Content (Ctrl+E: external editor) ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Gray));
+        let inner = content_block.inner(chunks[1]);
+        f.render_widget(content_block, chunks[1]);
+        f.render_widget(textarea, inner);
+    } else {
+        let content_block = Block::default()
+            .title(" Content ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Gray));
+        let content_input = Paragraph::new("").block(content_block);
+        f.render_widget(content_input, chunks[1]);
+    }
 
-    // Set cursor position (on title field)
-    f.set_cursor_position((
-        chunks[0].x + 1 + app.kb_edit_title.len() as u16,
-        chunks[0].y + 1,
-    ));
+    // Don't manually set cursor - TextArea handles it
 }
 
 fn draw_kb_status_bar(f: &mut Frame, area: Rect, app: &App) {
@@ -3040,7 +3053,7 @@ fn draw_kb_status_bar(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let hints = if app.kb_editing {
-        "Enter: newline | Alt+Enter: save | Esc: cancel"
+        "Ctrl+E: editor | Alt+Enter: save | Esc: cancel"
     } else if app.kb_creating {
         "Enter: create | Esc: cancel"
     } else if app.kb_confirming_delete {

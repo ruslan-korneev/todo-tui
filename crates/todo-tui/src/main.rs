@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 
 mod api;
 mod app;
+mod editor;
 mod figlet;
 mod markdown;
 mod ui;
@@ -152,6 +153,11 @@ async fn run_app<B: ratatui::backend::Backend>(
                 AppEvent::Key(key) => {
                     if app.handle_key(key, tx.clone()).await? {
                         return Ok(());
+                    }
+                    // Check if terminal needs clearing after external editor
+                    if app.needs_terminal_clear {
+                        terminal.clear()?;
+                        app.needs_terminal_clear = false;
                     }
                 }
                 AppEvent::Tick => {

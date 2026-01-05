@@ -48,3 +48,7 @@ base64.workspace = true
 # Markdown rendering
 pulldown-cmark = "0.10"
 syntect = "5.2"
+
+# Text editing
+tui-textarea = { version = "0.7", features = ["search"] }
+tempfile = "3"

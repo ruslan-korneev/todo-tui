@@ -164,13 +164,13 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 ## Phase 5: Knowledge Base
 
 ### 5.1 Document Storage
-- [ ] Document schema with ltree (hierarchical paths)
-- [ ] GET /api/v1/workspaces/{wid}/documents - List tree
-- [ ] POST /api/v1/workspaces/{wid}/documents - Create document
-- [ ] GET /api/v1/workspaces/{wid}/documents/{id} - Get document
-- [ ] PUT /api/v1/workspaces/{wid}/documents/{id} - Update document
-- [ ] DELETE /api/v1/workspaces/{wid}/documents/{id} - Delete (cascade)
-- [ ] PUT /api/v1/workspaces/{wid}/documents/{id}/move - Move in tree
+- [x] Document schema with ltree (hierarchical paths)
+- [x] GET /api/v1/workspaces/{wid}/documents - List tree
+- [x] POST /api/v1/workspaces/{wid}/documents - Create document
+- [x] GET /api/v1/workspaces/{wid}/documents/{id} - Get document
+- [x] PATCH /api/v1/workspaces/{wid}/documents/{id} - Update document
+- [x] DELETE /api/v1/workspaces/{wid}/documents/{id} - Delete (cascade)
+- [x] POST /api/v1/workspaces/{wid}/documents/{id}/move - Move in tree
 
 ### 5.2 Knowledge Base TUI
 - [ ] DocumentTree component (collapsible, Tab to expand)
@@ -382,8 +382,9 @@ DELETE /api/v1/workspaces/{wid}/tasks/{id}/comments/{cid}
 GET    /api/v1/workspaces/{wid}/documents
 POST   /api/v1/workspaces/{wid}/documents
 GET    /api/v1/workspaces/{wid}/documents/{id}
-PUT    /api/v1/workspaces/{wid}/documents/{id}
+PATCH  /api/v1/workspaces/{wid}/documents/{id}
 DELETE /api/v1/workspaces/{wid}/documents/{id}
+POST   /api/v1/workspaces/{wid}/documents/{id}/move
 ```
 
 ### Search

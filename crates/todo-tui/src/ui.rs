@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap},
     Frame,
 };
 
@@ -106,6 +106,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     // Draw loading overlay if loading
     if app.loading {
         draw_loading_overlay(f, &app.loading_message);
+    }
+
+    // Draw help modal (global overlay, always on top)
+    if app.help_visible {
+        draw_help(f, app);
     }
 }
 
@@ -631,6 +636,11 @@ fn draw_dashboard(f: &mut Frame, app: &App) {
     if app.preset_panel_visible {
         draw_preset_panel(f, app);
     }
+
+    // Draw menu popup if active
+    if app.menu_visible {
+        draw_menu(f, app);
+    }
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
@@ -979,7 +989,7 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
     } else if app.confirming_delete {
         "y: confirm | n/Esc: cancel"
     } else {
-        "/: search | n: new | d: delete | m: move | Enter: details | q: quit"
+        "?: help | ^P: menu | /: search | n: new | d: del | m: move | Enter: open"
     };
 
     let status = Paragraph::new(Line::from(vec![
@@ -2706,6 +2716,236 @@ fn draw_kb_delete_confirm_popup(f: &mut Frame, app: &App) {
     let hint = Paragraph::new("y: yes, delete | n: no, cancel")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
+    f.render_widget(hint, chunks[1]);
+}
+
+fn draw_help(f: &mut Frame, app: &App) {
+    let area = centered_rect(60, 80, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Help - Keyboard Shortcuts ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let help_content = vec![
+        Line::from(Span::styled(
+            "NAVIGATION",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::styled("  h/l     ", Style::default().fg(Color::Green)),
+            Span::raw("Move between columns"),
+        ]),
+        Line::from(vec![
+            Span::styled("  j/k     ", Style::default().fg(Color::Green)),
+            Span::raw("Move between tasks"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter   ", Style::default().fg(Color::Green)),
+            Span::raw("Open task details"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Backsp  ", Style::default().fg(Color::Green)),
+            Span::raw("Go back"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "TASK ACTIONS",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::styled("  n       ", Style::default().fg(Color::Green)),
+            Span::raw("New task"),
+        ]),
+        Line::from(vec![
+            Span::styled("  d       ", Style::default().fg(Color::Green)),
+            Span::raw("Delete task"),
+        ]),
+        Line::from(vec![
+            Span::styled("  m+h/l   ", Style::default().fg(Color::Green)),
+            Span::raw("Move task to column"),
+        ]),
+        Line::from(vec![
+            Span::styled("  e       ", Style::default().fg(Color::Green)),
+            Span::raw("Edit (in detail view)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  a       ", Style::default().fg(Color::Green)),
+            Span::raw("Add comment (in detail view)"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "SEARCH & FILTER",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::styled("  /       ", Style::default().fg(Color::Green)),
+            Span::raw("Search"),
+        ]),
+        Line::from(vec![
+            Span::styled("  f       ", Style::default().fg(Color::Green)),
+            Span::raw("Toggle filter bar"),
+        ]),
+        Line::from(vec![
+            Span::styled("  F       ", Style::default().fg(Color::Green)),
+            Span::raw("Open filter panel"),
+        ]),
+        Line::from(vec![
+            Span::styled("  P       ", Style::default().fg(Color::Green)),
+            Span::raw("Filter presets"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "FEATURES",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::styled("  Ctrl+P  ", Style::default().fg(Color::Green)),
+            Span::raw("Menu (command palette)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  M       ", Style::default().fg(Color::Green)),
+            Span::raw("Members"),
+        ]),
+        Line::from(vec![
+            Span::styled("  T       ", Style::default().fg(Color::Green)),
+            Span::raw("Tags"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+K  ", Style::default().fg(Color::Green)),
+            Span::raw("Knowledge Base"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+W  ", Style::default().fg(Color::Green)),
+            Span::raw("Workspace switch"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "GENERAL",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::styled("  ?       ", Style::default().fg(Color::Green)),
+            Span::raw("This help"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc     ", Style::default().fg(Color::Green)),
+            Span::raw("Cancel / close"),
+        ]),
+        Line::from(vec![
+            Span::styled("  q       ", Style::default().fg(Color::Green)),
+            Span::raw("Quit"),
+        ]),
+    ];
+
+    // Calculate visible lines based on scroll
+    let visible_height = inner.height.saturating_sub(2) as usize;
+    let max_scroll = help_content.len().saturating_sub(visible_height);
+    let scroll = app.help_scroll.min(max_scroll);
+
+    let visible_content: Vec<Line> = help_content
+        .into_iter()
+        .skip(scroll)
+        .take(visible_height)
+        .collect();
+
+    let content = Paragraph::new(visible_content).block(
+        Block::default()
+            .borders(Borders::NONE)
+            .padding(Padding::horizontal(2)),
+    );
+    f.render_widget(content, inner);
+
+    // Draw scroll indicator and hint at bottom
+    let hint_area = Rect {
+        x: area.x + 1,
+        y: area.y + area.height - 2,
+        width: area.width - 2,
+        height: 1,
+    };
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled("j/k", Style::default().fg(Color::Yellow)),
+        Span::raw(": scroll | "),
+        Span::styled("q/Esc/?", Style::default().fg(Color::Yellow)),
+        Span::raw(": close"),
+    ]))
+    .alignment(Alignment::Center);
+    f.render_widget(hint, hint_area);
+}
+
+fn draw_menu(f: &mut Frame, app: &App) {
+    let area = centered_rect(35, 40, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Menu ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let menu_items = [
+        ("m", "Members"),
+        ("k", "Knowledge Base"),
+        ("t", "Tags"),
+        ("f", "Filters"),
+        ("p", "Presets"),
+        ("/", "Search"),
+        ("w", "Workspaces"),
+    ];
+
+    let items: Vec<ListItem> = menu_items
+        .iter()
+        .enumerate()
+        .map(|(i, (key, label))| {
+            let is_selected = i == app.menu_selected_idx;
+            let style = if is_selected {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else {
+                Style::default()
+            };
+
+            ListItem::new(Line::from(vec![
+                Span::styled(format!(" [{}] ", key), Style::default().fg(Color::Yellow)),
+                Span::styled(*label, style),
+            ]))
+        })
+        .collect();
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(inner);
+
+    let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
+    f.render_widget(list, chunks[0]);
+
+    // Hint at bottom
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled("j/k", Style::default().fg(Color::Yellow)),
+        Span::raw(": nav | "),
+        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::raw(": select | "),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::raw(": close"),
+    ]))
+    .alignment(Alignment::Center);
     f.render_widget(hint, chunks[1]);
 }
 

@@ -297,6 +297,14 @@ pub struct App {
     pub kb_create_title: String,
     pub kb_create_parent_id: Option<uuid::Uuid>,
     pub kb_confirming_delete: bool,
+
+    // Menu state
+    pub menu_visible: bool,
+    pub menu_selected_idx: usize,
+
+    // Help state
+    pub help_visible: bool,
+    pub help_scroll: usize,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -417,12 +425,31 @@ impl App {
             kb_create_title: String::new(),
             kb_create_parent_id: None,
             kb_confirming_delete: false,
+
+            menu_visible: false,
+            menu_selected_idx: 0,
+
+            help_visible: false,
+            help_scroll: 0,
         }
     }
 
     pub fn set_loading(&mut self, loading: bool, message: &str) {
         self.loading = loading;
         self.loading_message = message.to_string();
+    }
+
+    /// Check if we're in a text input mode where ? should type '?' instead of opening help
+    fn is_text_input_mode(&self) -> bool {
+        self.vim_mode == VimMode::Insert
+            || self.searching
+            || self.command_mode
+            || self.creating_task
+            || self.kb_creating
+            || self.kb_editing
+            || self.inviting_member
+            || (self.tag_management_visible && self.tag_management_mode != TagManagementMode::List)
+            || self.creating_preset
     }
 
     pub fn set_error(&mut self, message: String) {
@@ -447,6 +474,19 @@ impl App {
         // Global quit with Ctrl+C
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Ok(true);
+        }
+
+        // Handle help modal if visible (global overlay)
+        if self.help_visible {
+            self.handle_help_key(key);
+            return Ok(false);
+        }
+
+        // Global help toggle with ?
+        if key.code == KeyCode::Char('?') && !self.is_text_input_mode() {
+            self.help_visible = true;
+            self.help_scroll = 0;
+            return Ok(false);
         }
 
         match self.view {
@@ -767,6 +807,11 @@ impl App {
             return self.handle_command_key(key).await;
         }
 
+        // Handle menu popup
+        if self.menu_visible {
+            return self.handle_menu_key(key, _tx).await;
+        }
+
         // Handle tag management popup
         if self.tag_management_visible {
             return self.handle_tag_management_key(key).await;
@@ -866,6 +911,11 @@ impl App {
                 // Open Knowledge Base
                 self.open_knowledge_base().await;
             }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Open Menu (command palette)
+                self.menu_visible = true;
+                self.menu_selected_idx = 0;
+            }
             KeyCode::Char('k') | KeyCode::Up => self.move_up(),
             KeyCode::Char('m') => {
                 // Enter move mode if there's a selected task
@@ -930,6 +980,14 @@ impl App {
             }
             KeyCode::Char('M') => {
                 // Toggle member panel
+                if !self.member_panel_visible {
+                    // Load members when opening
+                    if let Some(ref workspace) = self.current_workspace {
+                        if let Ok(members) = self.api.list_members(workspace.id).await {
+                            self.workspace_members = members;
+                        }
+                    }
+                }
                 self.member_panel_visible = !self.member_panel_visible;
                 self.selected_member_idx = 0;
                 self.inviting_member = false;
@@ -3172,5 +3230,134 @@ impl App {
         }
 
         self.set_loading(false, "");
+    }
+
+    // ============ Help Modal ============
+
+    fn handle_help_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+                self.help_visible = false;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.help_scroll = self.help_scroll.saturating_add(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.help_scroll = self.help_scroll.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    // ============ Menu ============
+
+    const MENU_ITEMS: [(&'static str, &'static str); 7] = [
+        ("m", "Members"),
+        ("k", "Knowledge Base"),
+        ("t", "Tags"),
+        ("f", "Filters"),
+        ("p", "Presets"),
+        ("/", "Search"),
+        ("w", "Workspaces"),
+    ];
+
+    async fn handle_menu_key(&mut self, key: KeyEvent, tx: mpsc::Sender<AppEvent>) -> Result<bool> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.menu_visible = false;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.menu_selected_idx < Self::MENU_ITEMS.len() - 1 {
+                    self.menu_selected_idx += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.menu_selected_idx = self.menu_selected_idx.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                self.execute_menu_action(tx).await?;
+            }
+            // Quick select by shortcut key
+            KeyCode::Char('m') => {
+                self.menu_selected_idx = 0;
+                self.execute_menu_action(tx).await?;
+            }
+            KeyCode::Char('K') => {
+                self.menu_selected_idx = 1;
+                self.execute_menu_action(tx).await?;
+            }
+            KeyCode::Char('t') => {
+                self.menu_selected_idx = 2;
+                self.execute_menu_action(tx).await?;
+            }
+            KeyCode::Char('F') => {
+                self.menu_selected_idx = 3;
+                self.execute_menu_action(tx).await?;
+            }
+            KeyCode::Char('P') => {
+                self.menu_selected_idx = 4;
+                self.execute_menu_action(tx).await?;
+            }
+            KeyCode::Char('/') => {
+                self.menu_selected_idx = 5;
+                self.execute_menu_action(tx).await?;
+            }
+            KeyCode::Char('W') => {
+                self.menu_selected_idx = 6;
+                self.execute_menu_action(tx).await?;
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    async fn execute_menu_action(&mut self, _tx: mpsc::Sender<AppEvent>) -> Result<()> {
+        self.menu_visible = false;
+        match self.menu_selected_idx {
+            0 => {
+                // Members - load members before showing panel
+                if let Some(ref workspace) = self.current_workspace {
+                    if let Ok(members) = self.api.list_members(workspace.id).await {
+                        self.workspace_members = members;
+                    }
+                }
+                self.member_panel_visible = true;
+                self.selected_member_idx = 0;
+            }
+            1 => {
+                // Knowledge Base
+                self.open_knowledge_base().await;
+            }
+            2 => {
+                // Tags
+                self.tag_management_visible = true;
+                self.tag_management_cursor = 0;
+                self.tag_management_mode = TagManagementMode::List;
+            }
+            3 => {
+                // Filters
+                self.open_filter_panel().await;
+            }
+            4 => {
+                // Presets
+                self.preset_panel_visible = true;
+                self.preset_list_cursor = 0;
+                self.creating_preset = false;
+            }
+            5 => {
+                // Search
+                self.searching = true;
+                self.search_query.clear();
+                self.search_results.clear();
+                self.search_selected = 0;
+                self.vim_mode = VimMode::Insert;
+            }
+            6 => {
+                // Workspaces
+                self.go_back_to_workspace_select();
+            }
+            _ => {}
+        }
+        Ok(())
     }
 }

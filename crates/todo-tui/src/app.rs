@@ -6,7 +6,7 @@ use todo_shared::api::{CreateDocumentRequest, CreateTaskRequest, SearchResultIte
 use todo_shared::{CommentWithAuthor, Document, Priority, Tag, Task, TaskStatus, User, Workspace, WorkspaceWithRole};
 use tokio::sync::mpsc;
 
-use crate::api::{ApiClient, UserPreferences};
+use crate::api::{ApiClient, UserPreferences, WorkspaceState};
 
 /// Preset colors for tags (hex format)
 pub const TAG_COLORS: &[&str] = &[
@@ -873,6 +873,7 @@ impl App {
             KeyCode::Enter => {
                 if let Some(ws) = self.workspaces.get(self.selected_workspace_idx) {
                     self.current_workspace = Some(ws.workspace.clone());
+                    let _ = WorkspaceState::save(ws.workspace.id);
                     self.load_workspace_data(tx).await;
                 }
             }
@@ -2683,6 +2684,7 @@ impl App {
             KeyCode::Enter => {
                 if let Some(ws) = self.workspaces.get(self.selected_workspace_idx) {
                     self.current_workspace = Some(ws.workspace.clone());
+                    let _ = WorkspaceState::save(ws.workspace.id);
                     self.workspace_modal_visible = false;
                     self.load_workspace_data(tx).await;
                 }
@@ -2811,14 +2813,39 @@ impl App {
                 self.user = Some(user);
                 self.load_workspaces().await;
 
-                // Select first workspace and go to Home (same as on_auth_success)
-                if let Some(ws) = self.workspaces.first() {
-                    self.current_workspace = Some(ws.workspace.clone());
-                    self.selected_workspace_idx = 0;
+                // Try to restore last opened workspace
+                let last_workspace_id = WorkspaceState::load()
+                    .ok()
+                    .flatten()
+                    .map(|s| s.workspace_id);
+
+                let restored = if let Some(id) = last_workspace_id {
+                    self.workspaces
+                        .iter()
+                        .enumerate()
+                        .find(|(_, w)| w.workspace.id == id)
+                        .map(|(idx, ws)| {
+                            self.selected_workspace_idx = idx;
+                            self.current_workspace = Some(ws.workspace.clone());
+                        })
+                        .is_some()
+                } else {
+                    false
+                };
+
+                // Fallback to first workspace if not restored
+                if !restored {
+                    if let Some(ws) = self.workspaces.first() {
+                        self.current_workspace = Some(ws.workspace.clone());
+                        self.selected_workspace_idx = 0;
+                    }
+                }
+
+                if self.current_workspace.is_some() {
                     self.view = View::Home;
                     self.load_home_data().await;
                 } else {
-                    // Fallback to workspace select if no workspaces
+                    // No workspaces available
                     self.view = View::WorkspaceSelect;
                 }
             }
@@ -2836,14 +2863,39 @@ impl App {
         self.login_password.clear();
         self.load_workspaces().await;
 
-        // Select first workspace (which should be the default "Personal")
-        if let Some(ws) = self.workspaces.first() {
-            self.current_workspace = Some(ws.workspace.clone());
-            self.selected_workspace_idx = 0;
+        // Try to restore last opened workspace
+        let last_workspace_id = WorkspaceState::load()
+            .ok()
+            .flatten()
+            .map(|s| s.workspace_id);
+
+        let restored = if let Some(id) = last_workspace_id {
+            self.workspaces
+                .iter()
+                .enumerate()
+                .find(|(_, w)| w.workspace.id == id)
+                .map(|(idx, ws)| {
+                    self.selected_workspace_idx = idx;
+                    self.current_workspace = Some(ws.workspace.clone());
+                })
+                .is_some()
+        } else {
+            false
+        };
+
+        // Fallback to first workspace if not restored
+        if !restored {
+            if let Some(ws) = self.workspaces.first() {
+                self.current_workspace = Some(ws.workspace.clone());
+                self.selected_workspace_idx = 0;
+            }
+        }
+
+        if self.current_workspace.is_some() {
             self.view = View::Home;
             self.load_home_data().await;
         } else {
-            // Fallback to workspace select if no workspaces
+            // No workspaces available
             self.view = View::WorkspaceSelect;
         }
     }

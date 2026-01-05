@@ -209,7 +209,7 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 
 ### Critical: TUI Race Conditions
 
-- [ ] Fix token refresh race condition (concurrent 401s)
+- [x] Fix token refresh race condition (proactive refresh before expiration)
 - [ ] Handle stale state after search/navigation
 
 ### High: Code Duplication (Backend)
@@ -316,6 +316,11 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 - [x] Command palette (Ctrl+P)
 - [x] Help overlay (?)
 - [x] Keyboard shortcut reference
+- [x] Home dashboard with workspace stats
+- [x] ASCII art workspace titles (figlet)
+- [x] Quote of the day
+- [x] Markdown rendering in Knowledge Base
+- [x] Remember last opened workspace
 - [ ] Status bar (sync status, workspace, user)
 - [ ] Notification toasts
 - [ ] Undo/redo for task changes

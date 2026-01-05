@@ -13,8 +13,10 @@ A terminal-based TODO application with kanban boards, full-text search, and mult
 - **Tags** - Color-coded labels for task organization
 - **Comments** - Threaded discussions on tasks with author attribution
 - **Filtering & Sorting** - Filter by priority, tags, assignee, due date; save presets
-- **Knowledge Base** - Hierarchical document tree for notes and documentation
+- **Knowledge Base** - Hierarchical document tree with markdown rendering and syntax highlighting
+- **Home Dashboard** - ASCII art workspace title, inspirational quotes, workspace stats
 - **Email Verification** - Secure account activation with one-time codes
+- **Workspace Memory** - Automatically opens last used workspace on startup
 - **Self-hosted** - Run on your own infrastructure
 
 ## Tech Stack
@@ -125,10 +127,12 @@ REFRESH_TOKEN_EXPIRES_IN=604800
 | Key | Action |
 |-----|--------|
 | `Ctrl+K` | Open Knowledge Base |
-| `j/k` | Navigate documents |
-| `l` | Expand document |
-| `h` | Collapse document |
-| `n` | New document (child if expanded) |
+| `Tab` | Switch focus (tree/content) |
+| `j/k` | Navigate tree / scroll content |
+| `l/h` | Expand/collapse document |
+| `Ctrl+d/u` | Page down/up (content) |
+| `g/G` | Top/bottom (content) |
+| `n` | New document |
 | `e` | Edit document |
 | `d` | Delete document |
 | `Alt+Enter` | Save (when editing) |
@@ -162,11 +166,12 @@ See [docs/roadmap.md](docs/roadmap.md) for the full development roadmap.
 - Phase 2: Core Task Management (CRUD, kanban, comments)
 - Phase 3: Search & Filtering (FTS, fuzzy matching, filter presets)
 - Phase 4: Workspaces & Multi-user (invitations, member management, role-based access)
-- Phase 5.1-5.2: Knowledge Base (document storage API, tree navigation TUI)
+- Phase 5: Knowledge Base (documents, task linking, unified search, markdown rendering)
+- Phase 7 (partial): Home dashboard, command palette, help overlay, workspace memory
 
 **Next:**
-- Phase 5.3-5.4: Task-document linking, document search
 - Phase 6: Integrations (YouTrack, GitHub, Telegram)
+- Phase 7: Polish (status bar, notifications, offline mode)
 
 ## License
 

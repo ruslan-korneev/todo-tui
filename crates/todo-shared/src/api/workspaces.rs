@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -60,4 +61,23 @@ pub struct WorkspaceMemberWithUser {
     pub display_name: String,
     pub email: String,
     pub role: WorkspaceRole,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceInvite {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub email: String,
+    pub role: WorkspaceRole,
+    pub token: String,
+    pub expires_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InviteDetails {
+    pub workspace_name: String,
+    pub inviter_name: String,
+    pub role: WorkspaceRole,
+    pub expires_at: DateTime<Utc>,
 }

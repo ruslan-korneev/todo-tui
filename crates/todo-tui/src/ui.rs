@@ -463,7 +463,7 @@ fn draw_workspace_select(f: &mut Frame, app: &App) {
         ),
         Span::raw(" "),
         Span::styled(
-            "n: new | j/k: select | Enter: open | L: logout | q: quit",
+            "n: new | i: join invite | j/k: select | Enter: open | L: logout | q: quit",
             Style::default().fg(Color::DarkGray),
         ),
     ]));
@@ -472,6 +472,11 @@ fn draw_workspace_select(f: &mut Frame, app: &App) {
     // Draw workspace creation popup if active
     if app.creating_workspace {
         draw_create_workspace_popup(f, app);
+    }
+
+    // Draw invite acceptance popup if active
+    if app.accepting_invite {
+        draw_accept_invite_popup(f, app);
     }
 }
 
@@ -515,6 +520,50 @@ fn draw_create_workspace_popup(f: &mut Frame, app: &App) {
     // Set cursor position
     f.set_cursor_position((
         chunks[0].x + 1 + app.new_workspace_name.len() as u16,
+        chunks[0].y + 1,
+    ));
+}
+
+fn draw_accept_invite_popup(f: &mut Frame, app: &App) {
+    let area = centered_rect(60, 25, f.area());
+
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Accept Invitation ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(3), // Token input
+            Constraint::Length(2), // Hint
+            Constraint::Min(0),    // Spacer
+        ])
+        .split(inner);
+
+    // Token input field
+    let token_block = Block::default()
+        .title(" Invite Token ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let token_text = Paragraph::new(app.invite_token_input.as_str()).block(token_block);
+    f.render_widget(token_text, chunks[0]);
+
+    // Hint
+    let hint = Paragraph::new("Paste the invite token you received | Enter: accept | Esc: cancel")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    f.render_widget(hint, chunks[1]);
+
+    // Set cursor position
+    f.set_cursor_position((
+        chunks[0].x + 1 + app.invite_token_input.len() as u16,
         chunks[0].y + 1,
     ));
 }
@@ -565,6 +614,11 @@ fn draw_dashboard(f: &mut Frame, app: &App) {
     // Draw tag management popup if active
     if app.tag_management_visible {
         draw_tag_management_popup(f, app);
+    }
+
+    // Draw member panel popup if active
+    if app.member_panel_visible {
+        draw_member_panel(f, app);
     }
 
     // Draw filter panel popup if active
@@ -1314,6 +1368,148 @@ fn draw_tag_management_popup(f: &mut Frame, app: &App) {
                 chunks[0].y + 1,
             ));
         }
+    }
+}
+
+fn draw_member_panel(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 60, f.area());
+    f.render_widget(Clear, area);
+
+    let title = if app.inviting_member {
+        " Invite Member "
+    } else {
+        " Workspace Members "
+    };
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if app.inviting_member {
+        // Invite form
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(1)
+            .constraints([
+                Constraint::Length(3), // Email input
+                Constraint::Length(3), // Role selector
+                Constraint::Min(0),    // Spacer
+                Constraint::Length(2), // Hints
+            ])
+            .split(inner);
+
+        // Email input
+        let email_block = Block::default()
+            .title(" Email ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow));
+        let email_input = Paragraph::new(app.invite_email.as_str()).block(email_block);
+        f.render_widget(email_input, chunks[0]);
+
+        // Role selector
+        let roles = ["Reader", "Editor", "Admin"];
+        let selected_role = roles.get(app.invite_role_idx).unwrap_or(&"Reader");
+        let role_block = Block::default()
+            .title(" Role (Tab to change) ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Gray));
+        let role_display = Paragraph::new(format!(" {} ", selected_role)).block(role_block);
+        f.render_widget(role_display, chunks[1]);
+
+        // Hints
+        let hint = Paragraph::new(Line::from(vec![
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(": send invite | "),
+            Span::styled("Tab", Style::default().fg(Color::Yellow)),
+            Span::raw(": change role | "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(": cancel"),
+        ]))
+        .alignment(Alignment::Center);
+        f.render_widget(hint, chunks[3]);
+
+        // Set cursor position
+        f.set_cursor_position((
+            chunks[0].x + 1 + app.invite_email.len() as u16,
+            chunks[0].y + 1,
+        ));
+    } else {
+        // Member list
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(1)
+            .constraints([
+                Constraint::Min(0),    // Member list
+                Constraint::Length(2), // Hints
+            ])
+            .split(inner);
+
+        let member_items: Vec<ListItem> = app
+            .workspace_members
+            .iter()
+            .enumerate()
+            .map(|(i, member)| {
+                let is_selected = i == app.selected_member_idx;
+                let style = if is_selected {
+                    Style::default().bg(Color::DarkGray).fg(Color::White)
+                } else {
+                    Style::default()
+                };
+
+                let role_style = match member.role {
+                    todo_shared::WorkspaceRole::Owner => Style::default().fg(Color::Yellow),
+                    todo_shared::WorkspaceRole::Admin => Style::default().fg(Color::Red),
+                    todo_shared::WorkspaceRole::Editor => Style::default().fg(Color::Green),
+                    todo_shared::WorkspaceRole::Reader => Style::default().fg(Color::Gray),
+                };
+
+                let role_str = match member.role {
+                    todo_shared::WorkspaceRole::Owner => "OWNER",
+                    todo_shared::WorkspaceRole::Admin => "ADMIN",
+                    todo_shared::WorkspaceRole::Editor => "EDIT ",
+                    todo_shared::WorkspaceRole::Reader => "READ ",
+                };
+
+                ListItem::new(Line::from(vec![
+                    Span::styled("  ", style),
+                    Span::styled(format!("[{}]", role_str), role_style),
+                    Span::styled(format!(" {} ", member.display_name), style),
+                    Span::styled(format!("({})", member.email), style.fg(Color::DarkGray)),
+                ]))
+            })
+            .collect();
+
+        let list_title = if app.workspace_members.is_empty() {
+            " No members ".to_string()
+        } else {
+            format!(" Members ({}) ", app.workspace_members.len())
+        };
+
+        let list = List::new(member_items).block(
+            Block::default()
+                .title(list_title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Gray)),
+        );
+        f.render_widget(list, chunks[0]);
+
+        // Hints
+        let hint = Paragraph::new(Line::from(vec![
+            Span::styled("i", Style::default().fg(Color::Yellow)),
+            Span::raw(": invite | "),
+            Span::styled("r", Style::default().fg(Color::Yellow)),
+            Span::raw(": change role | "),
+            Span::styled("d", Style::default().fg(Color::Yellow)),
+            Span::raw(": remove | "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(": close"),
+        ]))
+        .alignment(Alignment::Center);
+        f.render_widget(hint, chunks[1]);
     }
 }
 

@@ -3,13 +3,14 @@ use reqwest::{Client, StatusCode};
 use todo_shared::{
     api::{
         AuthResponse, CreateCommentRequest, CreateStatusRequest, CreateTagRequest,
-        CreateTaskRequest, CreateWorkspaceRequest, LoginRequest, MoveTaskRequest, RefreshRequest,
-        RegisterRequest, RegisterResponse, ResendVerificationRequest, SearchResponse,
-        SetTaskTagsRequest, TaskListParams, UpdateCommentRequest, UpdateStatusRequest,
-        UpdateTagRequest, UpdateTaskRequest, UpdateWorkspaceRequest, VerifyEmailRequest,
-        WorkspaceMemberWithUser,
+        CreateTaskRequest, CreateWorkspaceRequest, InviteDetails, LoginRequest, MoveTaskRequest,
+        RefreshRequest, RegisterRequest, RegisterResponse, ResendVerificationRequest,
+        SearchResponse, SetTaskTagsRequest, TaskListParams, UpdateCommentRequest,
+        UpdateStatusRequest, UpdateTagRequest, UpdateTaskRequest, UpdateWorkspaceRequest,
+        VerifyEmailRequest, WorkspaceInvite, WorkspaceMemberWithUser,
     },
-    CommentWithAuthor, Tag, Task, TaskStatus, User, Workspace, WorkspaceSettings, WorkspaceWithRole,
+    CommentWithAuthor, Tag, Task, TaskStatus, User, Workspace, WorkspaceRole, WorkspaceSettings,
+    WorkspaceWithRole,
 };
 use uuid::Uuid;
 
@@ -420,6 +421,91 @@ impl ApiClient {
         let response = self
             .client
             .delete(&self.url(&format!("/workspaces/{}", id)))
+            .header("Authorization", &auth)
+            .send()
+            .await?;
+
+        self.handle_empty_response(response).await
+    }
+
+    // ============ Member Management ============
+
+    pub async fn create_invite(
+        &self,
+        workspace_id: Uuid,
+        email: &str,
+        role: WorkspaceRole,
+    ) -> Result<WorkspaceInvite, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let response = self
+            .client
+            .post(self.url(&format!("/workspaces/{}/invites", workspace_id)))
+            .header("Authorization", &auth)
+            .json(&serde_json::json!({
+                "email": email,
+                "role": role
+            }))
+            .send()
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    pub async fn get_invite(&self, token: &str) -> Result<InviteDetails, ApiError> {
+        let response = self
+            .client
+            .get(self.url(&format!("/invites/{}", token)))
+            .send()
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    pub async fn accept_invite(&self, token: &str) -> Result<WorkspaceWithRole, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let response = self
+            .client
+            .post(self.url(&format!("/invites/{}/accept", token)))
+            .header("Authorization", &auth)
+            .send()
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    pub async fn update_member_role(
+        &self,
+        workspace_id: Uuid,
+        user_id: Uuid,
+        role: WorkspaceRole,
+    ) -> Result<WorkspaceMemberWithUser, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let response = self
+            .client
+            .put(self.url(&format!(
+                "/workspaces/{}/members/{}",
+                workspace_id, user_id
+            )))
+            .header("Authorization", &auth)
+            .json(&serde_json::json!({ "role": role }))
+            .send()
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    pub async fn remove_member(&self, workspace_id: Uuid, user_id: Uuid) -> Result<(), ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let response = self
+            .client
+            .delete(self.url(&format!(
+                "/workspaces/{}/members/{}",
+                workspace_id, user_id
+            )))
             .header("Authorization", &auth)
             .send()
             .await?;

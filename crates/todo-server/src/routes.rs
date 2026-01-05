@@ -1,6 +1,6 @@
 use axum::{
     middleware,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
@@ -51,7 +51,12 @@ pub fn create_router(db: DbPool, config: Config) -> Router {
         .route("/:id", get(workspace_handlers::get_workspace))
         .route("/:id", patch(workspace_handlers::update_workspace))
         .route("/:id", delete(workspace_handlers::delete_workspace))
-        .route("/:id/members", get(workspace_handlers::list_members));
+        .route("/:id/members", get(workspace_handlers::list_members))
+        .route("/:id/invites", post(workspace_handlers::create_invite))
+        .route(
+            "/:id/members/:user_id",
+            put(workspace_handlers::update_member_role).delete(workspace_handlers::remove_member),
+        );
 
     // Status routes (nested under workspaces)
     let status_routes = Router::new()
@@ -106,10 +111,24 @@ pub fn create_router(db: DbPool, config: Config) -> Router {
             auth_middleware,
         ));
 
+    // Public invite routes (view invite without auth)
+    let public_invite_routes = Router::new()
+        .route("/:token", get(workspace_handlers::get_invite));
+
+    // Protected invite routes (accept invite requires auth)
+    let protected_invite_routes = Router::new()
+        .route("/:token/accept", post(workspace_handlers::accept_invite))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
     // Combine all routes
     Router::new()
         .route("/health", get(health_check))
         .nest("/api/v1/auth", auth_routes)
+        .nest("/api/v1/invites", public_invite_routes)
+        .nest("/api/v1/invites", protected_invite_routes)
         .nest("/api/v1", protected_routes)
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())

@@ -21,6 +21,37 @@ use app::{App, AppEvent, View};
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
 
+    // Parse CLI arguments
+    let args: Vec<String> = std::env::args().collect();
+    let mut accept_invite_token: Option<String> = None;
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--accept-invite" => {
+                if i + 1 < args.len() {
+                    accept_invite_token = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    eprintln!("Error: --accept-invite requires a token argument");
+                    std::process::exit(1);
+                }
+            }
+            "--help" | "-h" => {
+                println!("Usage: todo-tui [OPTIONS]");
+                println!();
+                println!("Options:");
+                println!("  --accept-invite <TOKEN>  Accept a workspace invitation");
+                println!("  --help, -h               Show this help message");
+                return Ok(());
+            }
+            _ => {
+                eprintln!("Unknown argument: {}", args[i]);
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Get server URL from environment
     let server_url = std::env::var("TODO_SERVER_URL")
         .unwrap_or_else(|_| "http://localhost:3000".to_string());
@@ -28,6 +59,30 @@ async fn main() -> Result<()> {
     // Create API client
     let mut api = ApiClient::new(&server_url);
     let has_tokens = api.load_tokens().unwrap_or(false);
+
+    // Handle --accept-invite before starting TUI
+    if let Some(token) = accept_invite_token {
+        if !has_tokens {
+            eprintln!("Error: You must be logged in to accept an invite.");
+            eprintln!("Run the TUI first to log in, then use --accept-invite.");
+            std::process::exit(1);
+        }
+
+        println!("Accepting invite...");
+        match api.accept_invite(&token).await {
+            Ok(workspace) => {
+                println!(
+                    "Successfully joined workspace '{}' as {:?}!",
+                    workspace.workspace.name, workspace.role
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("Failed to accept invite: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
 
     // Setup terminal
     enable_raw_mode()?;

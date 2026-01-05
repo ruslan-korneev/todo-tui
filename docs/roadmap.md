@@ -94,9 +94,9 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 - [x] DELETE /api/v1/workspaces/{wid}/tasks/{id}/comments/{cid}
 - [x] Comments list in task detail TUI
 - [x] Add comment with timestamp
-- [ ] Create CommentWithUser response type (includes author username)
-- [ ] Update comment list endpoint to return CommentWithUser
-- [ ] Update TUI to display comments as `[timestamp][@username]: content`
+- [x] Create CommentWithUser response type (includes author username)
+- [x] Update comment list endpoint to return CommentWithUser
+- [x] Update TUI to display comments as `[timestamp][@username]: content`
 
 ---
 
@@ -126,16 +126,16 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 ## Phase 4: Workspaces & Multi-user
 
 ### 4.0 User Enhancements
-- [ ] Add username field to User model (unique, alphanumeric + underscore)
-- [ ] Migration: Add username column to users table
-- [ ] Update registration to require username
-- [ ] Add email verification flow with one-time code
-- [ ] Migration: Add verification fields (is_verified, verification_code, verification_expires_at)
-- [ ] POST /api/v1/auth/verify - Verify email with code
-- [ ] POST /api/v1/auth/resend-verification - Resend verification code
-- [ ] Restrict login to verified users only
-- [ ] Update TUI registration to include username input
-- [ ] Add email verification screen in TUI
+- [x] Add username field to User model (unique, alphanumeric + underscore)
+- [x] Migration: Add username column to users table
+- [x] Update registration to require username
+- [x] Add email verification flow with one-time code
+- [x] Migration: Add verification fields (is_verified, verification_code, verification_expires_at)
+- [x] POST /api/v1/auth/verify - Verify email with code
+- [x] POST /api/v1/auth/resend-verification - Resend verification code
+- [x] Restrict login to verified users only
+- [x] Update TUI registration to include username input
+- [x] Add email verification screen in TUI
 
 ### 4.1 Workspace API
 - [x] GET /api/v1/workspaces - List user's workspaces
@@ -147,17 +147,17 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 
 ### 4.2 Members & Invitations
 - [x] GET /api/v1/workspaces/{id}/members
-- [ ] POST /api/v1/workspaces/{id}/invites - Send invite
-- [ ] GET /api/v1/invites/{token} - Get invite details
-- [ ] POST /api/v1/invites/{token}/accept - Accept invite
-- [ ] PUT /api/v1/workspaces/{id}/members/{uid} - Update role
-- [ ] DELETE /api/v1/workspaces/{id}/members/{uid} - Remove member
+- [x] POST /api/v1/workspaces/{id}/invites - Send invite
+- [x] GET /api/v1/invites/{token} - Get invite details
+- [x] POST /api/v1/invites/{token}/accept - Accept invite
+- [x] PUT /api/v1/workspaces/{id}/members/{uid} - Update role
+- [x] DELETE /api/v1/workspaces/{id}/members/{uid} - Remove member
 
 ### 4.3 Workspace TUI
-- [ ] Workspace switcher (Ctrl+W)
-- [ ] Member list view
-- [ ] Role management UI (for admins/owners)
-- [ ] Invite flow
+- [x] Workspace switcher (Ctrl+W)
+- [x] Member list view
+- [x] Role management UI (for admins/owners)
+- [x] Invite flow
 
 ---
 

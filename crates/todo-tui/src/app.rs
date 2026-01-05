@@ -183,6 +183,8 @@ pub struct App {
     pub selected_workspace_idx: usize,
     pub creating_workspace: bool,
     pub new_workspace_name: String,
+    pub accepting_invite: bool,
+    pub invite_token_input: String,
 
     // Dashboard state
     pub current_workspace: Option<Workspace>,
@@ -272,6 +274,13 @@ pub struct App {
     pub tag_create_name: String,
     pub tag_create_color_idx: usize,
     pub tag_edit_id: Option<uuid::Uuid>,
+
+    // Member panel
+    pub member_panel_visible: bool,
+    pub selected_member_idx: usize,
+    pub inviting_member: bool,
+    pub invite_email: String,
+    pub invite_role_idx: usize, // 0=Reader, 1=Editor, 2=Admin
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -313,6 +322,8 @@ impl App {
             selected_workspace_idx: 0,
             creating_workspace: false,
             new_workspace_name: String::new(),
+            accepting_invite: false,
+            invite_token_input: String::new(),
             current_workspace: None,
             columns: Vec::new(),
             selected_column: 0,
@@ -373,6 +384,11 @@ impl App {
             tag_create_name: String::new(),
             tag_create_color_idx: 0,
             tag_edit_id: None,
+            member_panel_visible: false,
+            selected_member_idx: 0,
+            inviting_member: false,
+            invite_email: String::new(),
+            invite_role_idx: 0,
         }
     }
 
@@ -593,6 +609,30 @@ impl App {
             return Ok(false);
         }
 
+        // Handle invite acceptance mode
+        if self.accepting_invite {
+            match key.code {
+                KeyCode::Esc => {
+                    self.accepting_invite = false;
+                    self.invite_token_input.clear();
+                    self.vim_mode = VimMode::Normal;
+                }
+                KeyCode::Enter => {
+                    if !self.invite_token_input.is_empty() {
+                        self.do_accept_invite().await;
+                    }
+                }
+                KeyCode::Char(c) => {
+                    self.invite_token_input.push(c);
+                }
+                KeyCode::Backspace => {
+                    self.invite_token_input.pop();
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
         // Normal workspace selection mode
         match key.code {
             KeyCode::Char('q') => return Ok(true),
@@ -602,6 +642,12 @@ impl App {
             KeyCode::Char('n') => {
                 self.creating_workspace = true;
                 self.new_workspace_name.clear();
+                self.vim_mode = VimMode::Insert;
+            }
+            KeyCode::Char('i') => {
+                self.accepting_invite = true;
+                self.invite_token_input.clear();
+                self.vim_mode = VimMode::Insert;
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.selected_workspace_idx < self.workspaces.len().saturating_sub(1) {
@@ -644,6 +690,30 @@ impl App {
         self.set_loading(false, "");
     }
 
+    async fn do_accept_invite(&mut self) {
+        self.set_loading(true, "Accepting invite...");
+
+        let token = self.invite_token_input.clone();
+
+        match self.api.accept_invite(&token).await {
+            Ok(workspace) => {
+                self.accepting_invite = false;
+                self.invite_token_input.clear();
+                self.vim_mode = VimMode::Normal;
+                self.set_error(format!(
+                    "Joined '{}' as {:?}!",
+                    workspace.workspace.name, workspace.role
+                ));
+                self.load_workspaces().await;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to accept invite: {}", e));
+            }
+        }
+
+        self.set_loading(false, "");
+    }
+
     async fn do_logout(&mut self) {
         let _ = self.api.logout().await;
         self.user = None;
@@ -671,6 +741,11 @@ impl App {
         // Handle tag management popup
         if self.tag_management_visible {
             return self.handle_tag_management_key(key).await;
+        }
+
+        // Handle member panel
+        if self.member_panel_visible {
+            return self.handle_member_panel_key(key).await;
         }
 
         // Handle filter panel popup
@@ -819,6 +894,18 @@ impl App {
                 self.preset_list_cursor = 0;
                 self.creating_preset = false;
                 self.new_preset_name.clear();
+            }
+            KeyCode::Char('M') => {
+                // Toggle member panel
+                self.member_panel_visible = !self.member_panel_visible;
+                self.selected_member_idx = 0;
+                self.inviting_member = false;
+                self.invite_email.clear();
+                self.invite_role_idx = 0;
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Go to workspace switcher
+                self.go_back_to_workspace_select();
             }
             _ => {}
         }
@@ -1010,6 +1097,176 @@ impl App {
             }
         }
         Ok(false)
+    }
+
+    async fn handle_member_panel_key(&mut self, key: KeyEvent) -> Result<bool> {
+        // Handle invite input mode
+        if self.inviting_member {
+            match key.code {
+                KeyCode::Esc => {
+                    self.inviting_member = false;
+                    self.invite_email.clear();
+                    self.invite_role_idx = 0;
+                    self.vim_mode = VimMode::Normal;
+                }
+                KeyCode::Enter => {
+                    self.do_create_invite().await;
+                }
+                KeyCode::Tab => {
+                    // Cycle through roles: Reader(0) -> Editor(1) -> Admin(2)
+                    self.invite_role_idx = (self.invite_role_idx + 1) % 3;
+                }
+                KeyCode::Char(c) => {
+                    self.invite_email.push(c);
+                }
+                KeyCode::Backspace => {
+                    self.invite_email.pop();
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
+        // Normal member panel mode
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.member_panel_visible = false;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.workspace_members.is_empty() {
+                    self.selected_member_idx =
+                        (self.selected_member_idx + 1) % self.workspace_members.len();
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if !self.workspace_members.is_empty() {
+                    self.selected_member_idx = self
+                        .selected_member_idx
+                        .checked_sub(1)
+                        .unwrap_or(self.workspace_members.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Char('i') => {
+                // Open invite modal
+                self.inviting_member = true;
+                self.invite_email.clear();
+                self.invite_role_idx = 0;
+                self.vim_mode = VimMode::Insert;
+            }
+            KeyCode::Char('r') => {
+                // Change role of selected member
+                self.do_cycle_member_role().await;
+            }
+            KeyCode::Char('d') => {
+                // Remove selected member
+                self.do_remove_member().await;
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    async fn do_create_invite(&mut self) {
+        let workspace_id = match self.current_workspace {
+            Some(ref ws) => ws.id,
+            None => return,
+        };
+
+        if self.invite_email.trim().is_empty() {
+            return;
+        }
+
+        let role = match self.invite_role_idx {
+            0 => todo_shared::WorkspaceRole::Reader,
+            1 => todo_shared::WorkspaceRole::Editor,
+            _ => todo_shared::WorkspaceRole::Admin,
+        };
+
+        match self.api.create_invite(workspace_id, &self.invite_email, role).await {
+            Ok(invite) => {
+                // Show success message with invite token
+                self.set_error(format!(
+                    "Invite created! Token: {}",
+                    invite.token
+                ));
+                self.inviting_member = false;
+                self.invite_email.clear();
+                self.invite_role_idx = 0;
+                self.vim_mode = VimMode::Normal;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to create invite: {}", e));
+            }
+        }
+    }
+
+    async fn do_cycle_member_role(&mut self) {
+        let workspace_id = match self.current_workspace {
+            Some(ref ws) => ws.id,
+            None => return,
+        };
+
+        let member = match self.workspace_members.get(self.selected_member_idx) {
+            Some(m) => m.clone(),
+            None => return,
+        };
+
+        // Can't change owner's role
+        if member.role.is_owner() {
+            self.set_error("Cannot change owner's role".to_string());
+            return;
+        }
+
+        // Cycle role: Reader -> Editor -> Admin -> Reader
+        let new_role = match member.role {
+            todo_shared::WorkspaceRole::Reader => todo_shared::WorkspaceRole::Editor,
+            todo_shared::WorkspaceRole::Editor => todo_shared::WorkspaceRole::Admin,
+            todo_shared::WorkspaceRole::Admin => todo_shared::WorkspaceRole::Reader,
+            todo_shared::WorkspaceRole::Owner => return, // Can't change owner
+        };
+
+        match self.api.update_member_role(workspace_id, member.user_id, new_role).await {
+            Ok(updated) => {
+                // Update in local list
+                if let Some(m) = self.workspace_members.get_mut(self.selected_member_idx) {
+                    m.role = updated.role;
+                }
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to update role: {}", e));
+            }
+        }
+    }
+
+    async fn do_remove_member(&mut self) {
+        let workspace_id = match self.current_workspace {
+            Some(ref ws) => ws.id,
+            None => return,
+        };
+
+        let member = match self.workspace_members.get(self.selected_member_idx) {
+            Some(m) => m.clone(),
+            None => return,
+        };
+
+        // Can't remove owner
+        if member.role.is_owner() {
+            self.set_error("Cannot remove workspace owner".to_string());
+            return;
+        }
+
+        match self.api.remove_member(workspace_id, member.user_id).await {
+            Ok(()) => {
+                // Remove from local list
+                self.workspace_members.remove(self.selected_member_idx);
+                if self.selected_member_idx >= self.workspace_members.len() && self.selected_member_idx > 0 {
+                    self.selected_member_idx -= 1;
+                }
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to remove member: {}", e));
+            }
+        }
     }
 
     async fn do_create_tag(&mut self) {

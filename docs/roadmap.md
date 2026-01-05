@@ -35,7 +35,7 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 - [x] Comments table
 - [x] Tags table
 - [x] Documents table (ltree for hierarchy)
-- [x] Full-text search indexes (pg_trgm)
+- [x] Trigram search indexes (pg_trgm for multilingual search)
 - [x] Integration settings tables
 
 ### 1.4 Basic Backend (`crates/todo-server/`)
@@ -103,8 +103,7 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 ## Phase 3: Search & Filtering
 
 ### 3.1 Search Backend
-- [x] Full-text search with PostgreSQL tsvector
-- [x] Trigram fuzzy search (ripgrep-like speed)
+- [x] Trigram search with pg_trgm (multilingual, typo-tolerant)
 - [x] GET /api/v1/workspaces/{wid}/search?q=...
 - [x] Search pagination
 
@@ -193,6 +192,83 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 
 ---
 
+## Tech Debt & Improvements (Discovered Issues)
+
+### Critical: Security
+
+- [ ] Replace `CorsLayer::permissive()` with specific allowed origins
+- [ ] Fix refresh token validation (verify token hash, not just existence)
+- [ ] Add rate limiting for auth endpoints (login, verification)
+- [ ] Improve email validation (RFC 5322 format)
+
+### Critical: Cross-Crate Consistency
+
+- [ ] Add `username` field to User model (exists in DB, missing in model)
+- [ ] Add `email_verified`, `email_verified_at` to User model
+- [ ] Fix `tag_ids` type mismatch: `String` (server) vs `Vec<Uuid>` (shared)
+
+### Critical: TUI Race Conditions
+
+- [ ] Fix token refresh race condition (concurrent 401s)
+- [ ] Handle stale state after search/navigation
+
+### High: Code Duplication (Backend)
+
+- [ ] Extract `check_membership()` to shared module (duplicated in 6 handlers)
+- [ ] Extract `verify_task()` to shared module (duplicated in 3 handlers)
+
+### High: TUI Refactoring
+
+- [ ] Split `app.rs` (3754 lines) into modules:
+  - `auth_handlers.rs`
+  - `dashboard_handlers.rs`
+  - `kb_handlers.rs`
+  - `filter_handlers.rs`
+- [ ] Fix silent failures (search, tags, members, linked docs)
+- [ ] Add proper success notifications (not via `set_error()`)
+
+### High: Testing & CI
+
+- [ ] Add unit tests
+- [ ] Add integration tests
+- [ ] Setup GitHub Actions CI/CD
+- [ ] Add `cargo-audit` for vulnerability scanning
+
+### Medium: API Consistency
+
+- [ ] Standardize pagination defaults (50 vs 20)
+- [ ] Add request body size limits (`DefaultBodyLimit`)
+- [ ] Add color validation for tags/statuses (#RRGGBB)
+- [ ] Standardize HTTP status codes for deletes (204 vs 200)
+
+### Medium: UX Fixes
+
+- [ ] Add cascade delete warning for documents
+- [ ] Add feedback for invalid date input in filters
+- [ ] Standardize keybindings across views
+
+### Medium: Documentation
+
+- [ ] Update CLAUDE.md with new fields/migrations
+- [ ] Add OpenAPI/Swagger documentation
+- [ ] Add database ERD
+- [ ] Add setup instructions to README
+
+### Low: Nice-to-Have Features
+
+- [ ] Soft deletes (deleted_at) for recovery
+- [ ] Audit logging (who changed what)
+- [ ] Configurable DB pool size (env var)
+- [ ] User profile endpoints (change password, delete account)
+- [ ] Expired invites cleanup job
+- [ ] Batch task operations
+- [ ] Search history (Ctrl+R)
+- [ ] Column hide/collapse
+- [ ] Task sorting within column
+- [ ] Toast notifications
+
+---
+
 ## Phase 6: Integrations
 
 ### 6.1 YouTrack Sync
@@ -237,9 +313,9 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 ## Phase 7: Polish
 
 ### 7.1 UX Improvements
-- [ ] Command palette (Ctrl+P)
-- [ ] Help overlay (?)
-- [ ] Keyboard shortcut reference
+- [x] Command palette (Ctrl+P)
+- [x] Help overlay (?)
+- [x] Keyboard shortcut reference
 - [ ] Status bar (sync status, workspace, user)
 - [ ] Notification toasts
 - [ ] Undo/redo for task changes
@@ -395,7 +471,7 @@ GET    /api/v1/workspaces/{wid}/tasks/{id}/documents
 
 ### Search
 ```
-GET    /api/v1/workspaces/{wid}/search?q=...&search_type=all|tasks|documents&fuzzy=bool
+GET    /api/v1/workspaces/{wid}/search?q=...&search_type=all|tasks|documents
 ```
 
 ### Integrations

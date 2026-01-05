@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 
 mod api;
 mod app;
+mod figlet;
 mod ui;
 
 use api::ApiClient;

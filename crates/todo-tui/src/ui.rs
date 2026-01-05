@@ -93,9 +93,15 @@ pub fn draw(f: &mut Frame, app: &App) {
         View::EmailVerification => draw_email_verification(f, app),
         View::VerifyingAuth => draw_loading(f, "Verifying authentication..."),
         View::WorkspaceSelect => draw_workspace_select(f, app),
+        View::Home => draw_home(f, app),
         View::Dashboard => draw_dashboard(f, app),
         View::TaskDetail => draw_task_detail(f, app),
         View::KnowledgeBase => draw_knowledge_base(f, app),
+    }
+
+    // Draw workspace modal (can appear over Dashboard or KnowledgeBase)
+    if app.workspace_modal_visible {
+        draw_workspace_modal(f, app);
     }
 
     // Draw error overlay if present
@@ -484,6 +490,243 @@ fn draw_workspace_select(f: &mut Frame, app: &App) {
     if app.accepting_invite {
         draw_accept_invite_popup(f, app);
     }
+}
+
+fn draw_home(f: &mut Frame, app: &App) {
+    let area = f.area();
+
+    // Main layout: left menu/stats, right content (logo + quote)
+    let main_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(area);
+
+    // Left panel: menu + stats
+    let left_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Header
+            Constraint::Min(8),     // Menu
+            Constraint::Length(10), // Stats
+            Constraint::Length(1),  // Status bar
+        ])
+        .split(main_chunks[0]);
+
+    // Right panel: logo + quote
+    let right_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(8), // Logo
+            Constraint::Min(0),    // Quote
+        ])
+        .split(main_chunks[1]);
+
+    // Header
+    let user_name = app
+        .user
+        .as_ref()
+        .map(|u| u.display_name.as_str())
+        .unwrap_or("Unknown");
+
+    let header = Paragraph::new(vec![Line::from(vec![
+        Span::styled(
+            "TODO TUI",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" | "),
+        Span::styled(user_name, Style::default().fg(Color::Yellow)),
+    ])])
+    .block(Block::default().borders(Borders::BOTTOM));
+    f.render_widget(header, left_chunks[0]);
+
+    // Menu
+    draw_home_menu(f, left_chunks[1], app);
+
+    // Stats
+    draw_home_stats(f, left_chunks[2], app);
+
+    // Status bar
+    let status = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " HOME ",
+            Style::default().bg(Color::Magenta).fg(Color::White),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            "j/k: navigate | Enter: select | Ctrl+W: workspaces | q: quit",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+    f.render_widget(status, left_chunks[3]);
+
+    // Logo (figlet workspace name)
+    draw_home_logo(f, right_chunks[0], app);
+
+    // Quote
+    draw_home_quote(f, right_chunks[1], app);
+}
+
+fn draw_home_menu(f: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .title(" Navigation ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let items: Vec<ListItem> = crate::app::HomeMenuItem::all()
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let is_selected = i == app.home_menu_idx;
+            let style = if is_selected {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else {
+                Style::default()
+            };
+
+            let indicator = if is_selected { "▸ " } else { "  " };
+
+            ListItem::new(Line::from(vec![
+                Span::styled(indicator, style),
+                Span::styled(item.icon(), style),
+                Span::raw(" "),
+                Span::styled(item.label(), style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items);
+    f.render_widget(list, inner);
+}
+
+fn draw_home_stats(f: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .title(" Workspace Stats ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let stats = &app.home_stats;
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("📅 ", Style::default()),
+            Span::styled(
+                format!("{} tasks due today", stats.tasks_due_today),
+                if stats.tasks_due_today > 0 {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                },
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("⚠️  ", Style::default()),
+            Span::styled(
+                format!("{} overdue", stats.overdue_tasks),
+                if stats.overdue_tasks > 0 {
+                    Style::default().fg(Color::Red)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                },
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("📋 ", Style::default()),
+            Span::styled(
+                format!("{} pending tasks", stats.pending_tasks),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("✅ ", Style::default()),
+            Span::styled(
+                format!("{} completed this week", stats.completed_this_week),
+                Style::default().fg(Color::Green),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("👤 ", Style::default()),
+            Span::styled(
+                format!("{} assigned to me", stats.assigned_to_me),
+                Style::default().fg(Color::Blue),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("📚 ", Style::default()),
+            Span::styled(
+                format!("{} documents", stats.documents_count),
+                Style::default().fg(Color::Magenta),
+            ),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    f.render_widget(paragraph, inner);
+}
+
+fn draw_home_logo(f: &mut Frame, area: Rect, app: &App) {
+    let workspace_name = app
+        .current_workspace
+        .as_ref()
+        .map(|w| w.name.as_str())
+        .unwrap_or("TODO");
+
+    let ascii_lines = crate::figlet::render(workspace_name);
+
+    let lines: Vec<Line> = ascii_lines
+        .into_iter()
+        .map(|s| {
+            Line::from(Span::styled(
+                s,
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ))
+        })
+        .collect();
+
+    let block = Block::default()
+        .borders(Borders::NONE);
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let paragraph = Paragraph::new(lines)
+        .alignment(Alignment::Center);
+    f.render_widget(paragraph, inner);
+}
+
+fn draw_home_quote(f: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .title(" Quote of the Day ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let quote = app.home_quote.as_deref().unwrap_or("Loading...");
+    let author = app.home_quote_author.as_deref().unwrap_or("");
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("\"{}\"", quote),
+            Style::default().fg(Color::White).add_modifier(Modifier::ITALIC),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("— {}", author),
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    let paragraph = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .alignment(Alignment::Center);
+    f.render_widget(paragraph, inner);
 }
 
 fn draw_create_workspace_popup(f: &mut Frame, app: &App) {
@@ -3216,6 +3459,114 @@ fn draw_menu(f: &mut Frame, app: &App) {
     ]))
     .alignment(Alignment::Center);
     f.render_widget(hint, chunks[1]);
+}
+
+fn draw_workspace_modal(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 60, f.area());
+    f.render_widget(Clear, area);
+
+    let title = if app.creating_workspace {
+        " Create Workspace "
+    } else {
+        " Switch Workspace "
+    };
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Split into list area and hint/input area
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(inner);
+
+    if app.creating_workspace {
+        // Show input for new workspace name
+        let input = Paragraph::new(app.new_workspace_name.as_str())
+            .style(Style::default().fg(Color::White))
+            .block(
+                Block::default()
+                    .title(" Workspace Name ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            );
+        f.render_widget(input, chunks[0]);
+
+        let hint = Paragraph::new(Line::from(vec![
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(": create | "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(": cancel"),
+        ]))
+        .alignment(Alignment::Center);
+        f.render_widget(hint, chunks[1]);
+    } else {
+        // Show workspace list
+        let current_id = app.current_workspace.as_ref().map(|w| w.id);
+
+        let items: Vec<ListItem> = app
+            .workspaces
+            .iter()
+            .enumerate()
+            .map(|(i, ws)| {
+                let is_selected = i == app.selected_workspace_idx;
+                let is_current = Some(ws.workspace.id) == current_id;
+
+                let style = if is_selected {
+                    Style::default().bg(Color::DarkGray).fg(Color::White)
+                } else {
+                    Style::default()
+                };
+
+                let role_str = match ws.role {
+                    todo_shared::WorkspaceRole::Owner => "[Owner]",
+                    todo_shared::WorkspaceRole::Admin => "[Admin]",
+                    todo_shared::WorkspaceRole::Editor => "[Editor]",
+                    todo_shared::WorkspaceRole::Reader => "[Reader]",
+                };
+
+                let current_marker = if is_current { " ●" } else { "" };
+
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!(" {}{} ", ws.workspace.name, current_marker),
+                        if is_current {
+                            style.fg(Color::Green)
+                        } else {
+                            style
+                        },
+                    ),
+                    Span::styled(
+                        role_str,
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]))
+            })
+            .collect();
+
+        let list = List::new(items)
+            .highlight_style(Style::default().bg(Color::DarkGray));
+        f.render_widget(list, chunks[0]);
+
+        let hint = Paragraph::new(Line::from(vec![
+            Span::styled("j/k", Style::default().fg(Color::Yellow)),
+            Span::raw(": nav | "),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(": select | "),
+            Span::styled("n", Style::default().fg(Color::Yellow)),
+            Span::raw(": new | "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(": close"),
+        ]))
+        .alignment(Alignment::Center);
+        f.render_widget(hint, chunks[1]);
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

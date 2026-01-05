@@ -41,3 +41,6 @@ dirs.workspace = true
 
 # URL encoding
 urlencoding = "2"
+
+# JWT decoding for token expiry check
+base64.workspace = true

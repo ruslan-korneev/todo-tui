@@ -28,7 +28,8 @@ pub enum View {
     EmailVerification,
     VerifyingAuth,
     WorkspaceSelect,
-    Dashboard,
+    Home,
+    Dashboard,  // Kanban board
     TaskDetail,
     KnowledgeBase,
 }
@@ -129,6 +130,40 @@ impl DueDateMode {
     }
 }
 
+/// Menu items for Home view
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HomeMenuItem {
+    #[default]
+    Kanban,
+    KnowledgeBase,
+    WorkspaceSwitch,
+    Logout,
+}
+
+impl HomeMenuItem {
+    pub fn all() -> &'static [Self] {
+        &[Self::Kanban, Self::KnowledgeBase, Self::WorkspaceSwitch, Self::Logout]
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Kanban => "Kanban Board",
+            Self::KnowledgeBase => "Knowledge Base",
+            Self::WorkspaceSwitch => "Switch Workspace",
+            Self::Logout => "Logout",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Kanban => "📋",
+            Self::KnowledgeBase => "📚",
+            Self::WorkspaceSwitch => "🔄",
+            Self::Logout => "🚪",
+        }
+    }
+}
+
 /// Sort field options for the filter panel
 pub const SORT_FIELDS: &[(&str, &str)] = &[
     ("position", "Position"),
@@ -187,6 +222,12 @@ pub struct App {
     pub new_workspace_name: String,
     pub accepting_invite: bool,
     pub invite_token_input: String,
+
+    // Home view state
+    pub home_menu_idx: usize,
+    pub home_quote: Option<String>,
+    pub home_quote_author: Option<String>,
+    pub home_stats: todo_shared::api::WorkspaceStats,
 
     // Dashboard state
     pub current_workspace: Option<Workspace>,
@@ -312,6 +353,9 @@ pub struct App {
     pub menu_visible: bool,
     pub menu_selected_idx: usize,
 
+    // Workspace modal state
+    pub workspace_modal_visible: bool,
+
     // Help state
     pub help_visible: bool,
     pub help_scroll: usize,
@@ -358,6 +402,10 @@ impl App {
             new_workspace_name: String::new(),
             accepting_invite: false,
             invite_token_input: String::new(),
+            home_menu_idx: 0,
+            home_quote: None,
+            home_quote_author: None,
+            home_stats: Default::default(),
             current_workspace: None,
             columns: Vec::new(),
             selected_column: 0,
@@ -448,6 +496,8 @@ impl App {
             menu_visible: false,
             menu_selected_idx: 0,
 
+            workspace_modal_visible: false,
+
             help_visible: false,
             help_scroll: 0,
         }
@@ -513,6 +563,7 @@ impl App {
             View::EmailVerification => self.handle_verification_key(key, tx).await,
             View::VerifyingAuth => Ok(false), // No input during verification
             View::WorkspaceSelect => self.handle_workspace_select_key(key, tx).await,
+            View::Home => self.handle_home_key(key, tx).await,
             View::Dashboard => self.handle_dashboard_key(key, tx).await,
             View::TaskDetail => self.handle_task_detail_key(key, tx).await,
             View::KnowledgeBase => self.handle_knowledge_base_key(key, tx).await,
@@ -663,6 +714,66 @@ impl App {
         }
 
         Ok(false)
+    }
+
+    async fn handle_home_key(
+        &mut self,
+        key: KeyEvent,
+        tx: mpsc::Sender<AppEvent>,
+    ) -> Result<bool> {
+        if self.loading {
+            return Ok(false);
+        }
+
+        // Handle workspace modal
+        if self.workspace_modal_visible {
+            return self.handle_workspace_modal_key(key, tx).await;
+        }
+
+        match key.code {
+            KeyCode::Char('q') => return Ok(true),
+            KeyCode::Char('j') | KeyCode::Down => {
+                let items = HomeMenuItem::all();
+                if self.home_menu_idx < items.len() - 1 {
+                    self.home_menu_idx += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.home_menu_idx > 0 {
+                    self.home_menu_idx -= 1;
+                }
+            }
+            KeyCode::Enter => {
+                self.execute_home_menu_action(tx).await;
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_workspace_modal().await;
+            }
+            _ => {}
+        }
+
+        Ok(false)
+    }
+
+    async fn execute_home_menu_action(&mut self, tx: mpsc::Sender<AppEvent>) {
+        let items = HomeMenuItem::all();
+        if let Some(&item) = items.get(self.home_menu_idx) {
+            match item {
+                HomeMenuItem::Kanban => {
+                    self.view = View::Dashboard;
+                    self.load_workspace_data(tx).await;
+                }
+                HomeMenuItem::KnowledgeBase => {
+                    self.open_knowledge_base().await;
+                }
+                HomeMenuItem::WorkspaceSwitch => {
+                    self.open_workspace_modal().await;
+                }
+                HomeMenuItem::Logout => {
+                    self.do_logout().await;
+                }
+            }
+        }
     }
 
     async fn handle_workspace_select_key(
@@ -831,6 +942,11 @@ impl App {
             return self.handle_menu_key(key, _tx).await;
         }
 
+        // Handle workspace modal
+        if self.workspace_modal_visible {
+            return self.handle_workspace_modal_key(key, _tx).await;
+        }
+
         // Handle tag management popup
         if self.tag_management_visible {
             return self.handle_tag_management_key(key).await;
@@ -921,8 +1037,14 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Char('q') => return Ok(true),
-            KeyCode::Backspace => self.go_back_to_workspace_select(),
+            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Backspace => {
+                // Go back to Home
+                self.view = View::Home;
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Open workspace modal (Ctrl+W)
+                self.open_workspace_modal().await;
+            }
             KeyCode::Char('h') | KeyCode::Left => self.move_left(),
             KeyCode::Char('l') | KeyCode::Right => self.move_right(),
             KeyCode::Char('j') | KeyCode::Down => self.move_down(),
@@ -2475,6 +2597,120 @@ impl App {
         self.view = View::WorkspaceSelect;
     }
 
+    /// Open workspace modal and refresh the workspace list
+    async fn open_workspace_modal(&mut self) {
+        // Refresh workspace list before showing modal
+        self.load_workspaces().await;
+
+        // Find current workspace in the list
+        if let Some(ref current) = self.current_workspace {
+            if let Some(idx) = self.workspaces.iter().position(|w| w.workspace.id == current.id) {
+                self.selected_workspace_idx = idx;
+            }
+        }
+
+        self.workspace_modal_visible = true;
+        self.creating_workspace = false;
+        self.new_workspace_name.clear();
+    }
+
+    /// Handle key events in the workspace modal
+    async fn handle_workspace_modal_key(
+        &mut self,
+        key: KeyEvent,
+        tx: mpsc::Sender<AppEvent>,
+    ) -> Result<bool> {
+        if self.loading {
+            return Ok(false);
+        }
+
+        // Handle workspace creation mode
+        if self.creating_workspace {
+            match key.code {
+                KeyCode::Esc => {
+                    self.creating_workspace = false;
+                    self.new_workspace_name.clear();
+                    self.vim_mode = VimMode::Normal;
+                }
+                KeyCode::Enter => {
+                    if !self.new_workspace_name.is_empty() {
+                        self.do_create_workspace_modal().await;
+                    }
+                }
+                KeyCode::Char(c) => {
+                    self.new_workspace_name.push(c);
+                }
+                KeyCode::Backspace => {
+                    self.new_workspace_name.pop();
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
+        // Normal workspace selection mode
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.workspace_modal_visible = false;
+            }
+            KeyCode::Char('n') => {
+                self.creating_workspace = true;
+                self.new_workspace_name.clear();
+                self.vim_mode = VimMode::Insert;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.selected_workspace_idx < self.workspaces.len().saturating_sub(1) {
+                    self.selected_workspace_idx += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.selected_workspace_idx > 0 {
+                    self.selected_workspace_idx -= 1;
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(ws) = self.workspaces.get(self.selected_workspace_idx) {
+                    self.current_workspace = Some(ws.workspace.clone());
+                    self.workspace_modal_visible = false;
+                    self.load_workspace_data(tx).await;
+                }
+            }
+            KeyCode::Char('L') => {
+                self.workspace_modal_visible = false;
+                self.do_logout().await;
+            }
+            _ => {}
+        }
+
+        Ok(false)
+    }
+
+    /// Create workspace from modal
+    async fn do_create_workspace_modal(&mut self) {
+        self.set_loading(true, "Creating workspace...");
+
+        let name = self.new_workspace_name.clone();
+
+        match self.api.create_workspace(&name, None).await {
+            Ok(ws) => {
+                self.creating_workspace = false;
+                self.new_workspace_name.clear();
+                self.vim_mode = VimMode::Normal;
+                // Add new workspace to list and select it
+                self.workspaces.push(WorkspaceWithRole {
+                    workspace: ws.clone(),
+                    role: todo_shared::WorkspaceRole::Owner,
+                });
+                self.selected_workspace_idx = self.workspaces.len() - 1;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to create workspace: {}", e));
+            }
+        }
+
+        self.set_loading(false, "");
+    }
+
     async fn do_login(&mut self, tx: mpsc::Sender<AppEvent>) {
         self.set_loading(true, "Logging in...");
 
@@ -2561,8 +2797,18 @@ impl App {
         match self.api.me().await {
             Ok(user) => {
                 self.user = Some(user);
-                self.view = View::WorkspaceSelect;
                 self.load_workspaces().await;
+
+                // Select first workspace and go to Home (same as on_auth_success)
+                if let Some(ws) = self.workspaces.first() {
+                    self.current_workspace = Some(ws.workspace.clone());
+                    self.selected_workspace_idx = 0;
+                    self.view = View::Home;
+                    self.load_home_data().await;
+                } else {
+                    // Fallback to workspace select if no workspaces
+                    self.view = View::WorkspaceSelect;
+                }
             }
             Err(_) => {
                 // Token invalid, go to login
@@ -2575,9 +2821,33 @@ impl App {
     }
 
     pub async fn on_auth_success(&mut self) {
-        self.view = View::WorkspaceSelect;
         self.login_password.clear();
         self.load_workspaces().await;
+
+        // Select first workspace (which should be the default "Personal")
+        if let Some(ws) = self.workspaces.first() {
+            self.current_workspace = Some(ws.workspace.clone());
+            self.selected_workspace_idx = 0;
+            self.view = View::Home;
+            self.load_home_data().await;
+        } else {
+            // Fallback to workspace select if no workspaces
+            self.view = View::WorkspaceSelect;
+        }
+    }
+
+    async fn load_home_data(&mut self) {
+        // Load quote asynchronously (don't block UI)
+        let (quote, author) = crate::api::quote::get_quote().await;
+        self.home_quote = Some(quote);
+        self.home_quote_author = Some(author);
+
+        // Load workspace stats
+        if let Some(ref workspace) = self.current_workspace {
+            if let Ok(stats) = self.api.get_workspace_stats(workspace.id).await {
+                self.home_stats = stats;
+            }
+        }
     }
 
     pub fn on_auth_failed(&mut self, msg: String) {
@@ -3184,8 +3454,13 @@ impl App {
     async fn handle_knowledge_base_key(
         &mut self,
         key: KeyEvent,
-        _tx: mpsc::Sender<AppEvent>,
+        tx: mpsc::Sender<AppEvent>,
     ) -> Result<bool> {
+        // Handle workspace modal
+        if self.workspace_modal_visible {
+            return self.handle_workspace_modal_key(key, tx).await;
+        }
+
         // Handle linking task mode
         if self.linking_task_mode {
             return self.handle_link_task_key(key).await;
@@ -3259,9 +3534,13 @@ impl App {
 
         // Normal mode navigation
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
-                // Return to dashboard
-                self.view = View::Dashboard;
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Open workspace modal (Ctrl+W)
+                self.open_workspace_modal().await;
+            }
+            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Backspace => {
+                // Return to Home
+                self.view = View::Home;
                 self.kb_selected_doc = None;
             }
             KeyCode::Char('j') | KeyCode::Down => {
@@ -3745,7 +4024,7 @@ impl App {
             }
             6 => {
                 // Workspaces
-                self.go_back_to_workspace_select();
+                self.open_workspace_modal().await;
             }
             _ => {}
         }

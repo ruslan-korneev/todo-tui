@@ -39,6 +39,7 @@ ratatui = "0.28"
 crossterm = "0.28"
 reqwest = { version = "0.12", features = ["json"] }
 dirs = "5"
+base64 = "0.22"
 
 # Integrations (added later)
 # teloxide = { version = "0.12", features = ["macros"] }

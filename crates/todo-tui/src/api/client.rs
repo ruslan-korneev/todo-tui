@@ -1,4 +1,5 @@
 use anyhow::Result;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::{Client, StatusCode};
 use todo_shared::{
     api::{
@@ -8,7 +9,7 @@ use todo_shared::{
         RegisterResponse, ResendVerificationRequest, SearchResponse, SetTaskTagsRequest,
         TaskListParams, UpdateCommentRequest, UpdateDocumentRequest, UpdateStatusRequest,
         UpdateTagRequest, UpdateTaskRequest, UpdateWorkspaceRequest, VerifyEmailRequest,
-        WorkspaceInvite, WorkspaceMemberWithUser,
+        WorkspaceInvite, WorkspaceMemberWithUser, WorkspaceStats,
     },
     CommentWithAuthor, Document, Tag, Task, TaskStatus, User, Workspace, WorkspaceRole,
     WorkspaceSettings, WorkspaceWithRole,
@@ -16,6 +17,12 @@ use todo_shared::{
 use uuid::Uuid;
 
 use super::auth::AuthTokens;
+
+/// JWT payload claims we need for expiry checking
+#[derive(serde::Deserialize)]
+struct JwtClaims {
+    exp: i64,
+}
 
 #[derive(Debug, serde::Deserialize)]
 #[allow(dead_code)] // Pagination fields for future use
@@ -88,6 +95,52 @@ impl ApiClient {
         self.tokens
             .as_ref()
             .map(|t| format!("Bearer {}", t.access_token))
+    }
+
+    /// Decode JWT payload and extract expiration time
+    fn decode_token_exp(token: &str) -> Option<i64> {
+        // JWT format: header.payload.signature
+        let parts: Vec<&str> = token.split('.').collect();
+        if parts.len() != 3 {
+            return None;
+        }
+
+        // Decode base64 payload
+        let payload = URL_SAFE_NO_PAD.decode(parts[1]).ok()?;
+        let claims: JwtClaims = serde_json::from_slice(&payload).ok()?;
+
+        Some(claims.exp)
+    }
+
+    /// Check if the access token is expiring soon (within 60 seconds)
+    fn is_token_expiring_soon(&self) -> bool {
+        let Some(tokens) = &self.tokens else {
+            return true; // No token = treat as expired
+        };
+
+        let Some(exp) = Self::decode_token_exp(&tokens.access_token) else {
+            return false; // Can't decode = don't refresh proactively
+        };
+
+        let now = chrono::Utc::now().timestamp();
+        exp < now + 60 // Token expires within 60 seconds
+    }
+
+    /// Ensure we have a valid token, refreshing if needed
+    /// Returns true if we have a valid token, false if refresh failed
+    pub async fn ensure_valid_token(&mut self) -> bool {
+        if !self.is_authenticated() {
+            return false;
+        }
+
+        if self.is_token_expiring_soon() {
+            // Try to refresh the token
+            if self.refresh().await.is_err() {
+                return false;
+            }
+        }
+
+        true
     }
 
     /// Handle API response
@@ -427,6 +480,19 @@ impl ApiClient {
             .await?;
 
         self.handle_empty_response(response).await
+    }
+
+    pub async fn get_workspace_stats(&self, workspace_id: Uuid) -> Result<WorkspaceStats, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let response = self
+            .client
+            .get(&self.url(&format!("/workspaces/{}/stats", workspace_id)))
+            .header("Authorization", &auth)
+            .send()
+            .await?;
+
+        self.handle_response(response).await
     }
 
     // ============ Member Management ============

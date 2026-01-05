@@ -8,8 +8,11 @@ A terminal-based TODO application with kanban boards, full-text search, and mult
 - **Vim-style Navigation** - Efficient keyboard-driven workflow with familiar keybindings
 - **Full-text Search** - PostgreSQL-powered search with fuzzy matching support
 - **Multi-user Workspaces** - Role-based access control (owner, admin, editor, reader)
+- **Workspace Invitations** - Invite members via token, manage roles
 - **Task Management** - Priority levels, due dates, time estimates, and assignees
+- **Tags** - Color-coded labels for task organization
 - **Comments** - Threaded discussions on tasks with author attribution
+- **Filtering & Sorting** - Filter by priority, tags, assignee, due date; save presets
 - **Email Verification** - Secure account activation with one-time codes
 - **Self-hosted** - Run on your own infrastructure
 
@@ -90,8 +93,9 @@ REFRESH_TOKEN_EXPIRES_IN=604800
 | `j/k` | Move between tasks |
 | `Enter` | Open task details |
 | `Backspace` | Go back |
+| `Ctrl+W` | Workspace switcher |
 
-### Actions
+### Task Actions
 | Key | Action |
 |-----|--------|
 | `n` | New task |
@@ -99,16 +103,42 @@ REFRESH_TOKEN_EXPIRES_IN=604800
 | `m` + `h/l` | Move task to another column |
 | `e` | Edit task (in detail view) |
 | `a` | Add comment (in detail view) |
-| `/` | Search |
-| `Ctrl+F` | Toggle fuzzy search |
-| `q` | Quit |
 
-### Modes
+### Search & Filter
 | Key | Action |
 |-----|--------|
-| `i` | Enter insert mode |
-| `Esc` | Return to normal mode |
-| `Tab` | Next field |
+| `/` | Search |
+| `f` | Toggle filter bar |
+| `F` | Open filter panel |
+| `P` | Filter presets |
+
+### Workspace & Members
+| Key | Action |
+|-----|--------|
+| `M` | Member panel |
+| `i` | Invite member (in member panel) |
+| `r` | Change role (in member panel) |
+| `T` | Tag management |
+
+### General
+| Key | Action |
+|-----|--------|
+| `Esc` | Cancel / close |
+| `Tab` | Next field / cycle options |
+| `q` | Quit |
+
+## CLI Usage
+
+```bash
+# Run the TUI
+cargo run -p todo-tui
+
+# Accept a workspace invitation
+cargo run -p todo-tui -- --accept-invite <TOKEN>
+
+# Show help
+cargo run -p todo-tui -- --help
+```
 
 ## Development Status
 
@@ -117,11 +147,11 @@ See [docs/roadmap.md](docs/roadmap.md) for the full development roadmap.
 **Completed:**
 - Phase 1: Foundation (auth, database, basic TUI)
 - Phase 2: Core Task Management (CRUD, kanban, comments)
-- Phase 3: Search (FTS, fuzzy, search UI), Filtering, Ordering
-- Phase 4.0: User enhancements (username, email verification, comment author display)
+- Phase 3: Search & Filtering (FTS, fuzzy matching, filter presets)
+- Phase 4: Workspaces & Multi-user (invitations, member management, role-based access)
 
-**In Progress:**
-- Phase 4: Member invitations
+**Next:**
+- Phase 5: Knowledge Base (hierarchical documents, task linking)
 
 ## License
 

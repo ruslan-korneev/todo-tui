@@ -688,3 +688,107 @@ pub async fn remove_member(
 
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// GET /api/v1/workspaces/:id/stats
+pub async fn get_workspace_stats(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path(workspace_id): Path<Uuid>,
+) -> Result<Json<todo_shared::api::WorkspaceStats>, AppError> {
+    // Check membership
+    let role: Option<(WorkspaceRole,)> = sqlx::query_as(
+        r#"SELECT role as "role: WorkspaceRole" FROM workspace_members WHERE workspace_id = $1 AND user_id = $2"#,
+    )
+    .bind(workspace_id)
+    .bind(user.id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    if role.is_none() {
+        return Err(AppError::NotFound);
+    }
+
+    let today = Utc::now().date_naive();
+    let week_ago = Utc::now() - Duration::days(7);
+
+    // Get all stats in parallel-ish queries
+    // Tasks due today
+    let (tasks_due_today,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*) FROM tasks t
+        JOIN task_statuses s ON t.status_id = s.id
+        WHERE t.workspace_id = $1 AND t.due_date = $2 AND s.is_done = FALSE
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(today)
+    .fetch_one(&state.db)
+    .await?;
+
+    // Overdue tasks
+    let (overdue_tasks,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*) FROM tasks t
+        JOIN task_statuses s ON t.status_id = s.id
+        WHERE t.workspace_id = $1 AND t.due_date < $2 AND s.is_done = FALSE
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(today)
+    .fetch_one(&state.db)
+    .await?;
+
+    // Pending tasks (not done)
+    let (pending_tasks,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*) FROM tasks t
+        JOIN task_statuses s ON t.status_id = s.id
+        WHERE t.workspace_id = $1 AND s.is_done = FALSE
+        "#,
+    )
+    .bind(workspace_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    // Completed this week
+    let (completed_this_week,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*) FROM tasks
+        WHERE workspace_id = $1 AND completed_at >= $2
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(week_ago)
+    .fetch_one(&state.db)
+    .await?;
+
+    // Assigned to current user
+    let (assigned_to_me,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*) FROM tasks t
+        JOIN task_statuses s ON t.status_id = s.id
+        WHERE t.workspace_id = $1 AND t.assigned_to = $2 AND s.is_done = FALSE
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(user.id)
+    .fetch_one(&state.db)
+    .await?;
+
+    // Documents count
+    let (documents_count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM documents WHERE workspace_id = $1",
+    )
+    .bind(workspace_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(todo_shared::api::WorkspaceStats {
+        tasks_due_today,
+        overdue_tasks,
+        pending_tasks,
+        completed_this_week,
+        assigned_to_me,
+        documents_count,
+    }))
+}

@@ -51,6 +51,7 @@ pub fn create_router(db: DbPool, config: Config) -> Router {
         .route("/:id", get(workspace_handlers::get_workspace))
         .route("/:id", patch(workspace_handlers::update_workspace))
         .route("/:id", delete(workspace_handlers::delete_workspace))
+        .route("/:id/stats", get(workspace_handlers::get_workspace_stats))
         .route("/:id/members", get(workspace_handlers::list_members))
         .route("/:id/invites", post(workspace_handlers::create_invite))
         .route(

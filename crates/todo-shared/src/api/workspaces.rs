@@ -81,3 +81,14 @@ pub struct InviteDetails {
     pub role: WorkspaceRole,
     pub expires_at: DateTime<Utc>,
 }
+
+/// Workspace statistics for the home dashboard
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WorkspaceStats {
+    pub tasks_due_today: i64,
+    pub overdue_tasks: i64,
+    pub pending_tasks: i64,
+    pub completed_this_week: i64,
+    pub assigned_to_me: i64,
+    pub documents_count: i64,
+}

@@ -16,7 +16,7 @@ impl UserPreferences {
     fn prefs_path() -> Result<PathBuf> {
         let config_dir = dirs::config_dir()
             .context("Could not find config directory")?
-            .join("todo-tui");
+            .join("todo");
 
         fs::create_dir_all(&config_dir)
             .context("Could not create config directory")?;

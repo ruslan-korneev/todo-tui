@@ -117,6 +117,52 @@ pub async fn register(
     .execute(&state.db)
     .await?;
 
+    // Create default workspace for the user
+    let workspace_id = Uuid::new_v4();
+    let workspace_slug = format!("personal-{}", &user_id.to_string()[..8]);
+
+    sqlx::query(
+        r#"
+        INSERT INTO workspaces (id, name, slug, owner_id, is_default)
+        VALUES ($1, 'Personal', $2, $3, TRUE)
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(&workspace_slug)
+    .bind(user_id)
+    .execute(&state.db)
+    .await?;
+
+    // Add user as owner of the workspace
+    sqlx::query(
+        r#"
+        INSERT INTO workspace_members (workspace_id, user_id, role)
+        VALUES ($1, $2, 'owner')
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(user_id)
+    .execute(&state.db)
+    .await?;
+
+    // Create default statuses for the workspace
+    let status_ids: Vec<Uuid> = vec![Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+    sqlx::query(
+        r#"
+        INSERT INTO task_statuses (id, workspace_id, name, slug, color, position, is_done)
+        VALUES
+            ($1, $4, 'To Do', 'todo', '#6B7280', 0, FALSE),
+            ($2, $4, 'In Progress', 'in-progress', '#3B82F6', 1, FALSE),
+            ($3, $4, 'Done', 'done', '#10B981', 2, TRUE)
+        "#,
+    )
+    .bind(status_ids[0])
+    .bind(status_ids[1])
+    .bind(status_ids[2])
+    .bind(workspace_id)
+    .execute(&state.db)
+    .await?;
+
     // Log verification code to console (development mode)
     tracing::info!(
         "VERIFICATION CODE for {} ({}): {}",

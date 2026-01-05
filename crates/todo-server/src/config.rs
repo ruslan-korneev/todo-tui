@@ -20,7 +20,7 @@ impl Config {
                 .unwrap_or_else(|_| "900".to_string()) // 15 minutes
                 .parse()?,
             refresh_token_expires_in: env::var("REFRESH_TOKEN_EXPIRES_IN")
-                .unwrap_or_else(|_| "604800".to_string()) // 7 days
+                .unwrap_or_else(|_| "2592000".to_string()) // 30 days
                 .parse()?,
             port: env::var("PORT")
                 .unwrap_or_else(|_| "3000".to_string())

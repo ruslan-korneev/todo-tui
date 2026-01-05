@@ -36,6 +36,56 @@ fn priority_indicator(priority: Option<Priority>) -> (&'static str, Color) {
     }
 }
 
+/// Wraps text to fit within a given width, respecting word boundaries
+fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return vec![text.to_string()];
+    }
+
+    let mut lines = Vec::new();
+
+    // First split by newlines to preserve intentional line breaks
+    for paragraph in text.split('\n') {
+        if paragraph.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+
+        let words: Vec<&str> = paragraph.split_whitespace().collect();
+        if words.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+
+        let mut current_line = String::new();
+
+        for word in words {
+            if current_line.is_empty() {
+                // First word on line - add it even if it exceeds max_width
+                current_line = word.to_string();
+            } else if current_line.len() + 1 + word.len() <= max_width {
+                // Word fits on current line
+                current_line.push(' ');
+                current_line.push_str(word);
+            } else {
+                // Word doesn't fit - start new line
+                lines.push(current_line);
+                current_line = word.to_string();
+            }
+        }
+
+        if !current_line.is_empty() {
+            lines.push(current_line);
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    lines
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     // Draw based on current view
     match app.view {
@@ -1476,24 +1526,46 @@ fn draw_task_view_mode(f: &mut Frame, area: Rect, app: &App, task: &todo_shared:
         ])
         .split(comments_area);
 
-    // Comments list
+    // Comments list with text wrapping
+    let available_width = inner_chunks[0].width.saturating_sub(2) as usize; // -2 for borders
     let comment_items: Vec<ListItem> = app
         .task_comments
         .iter()
         .map(|comment| {
             let timestamp = comment.created_at.format("%Y-%m-%d %H:%M").to_string();
-            let content = Line::from(vec![
-                Span::styled(
-                    format!("[{}]", timestamp),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::styled(
-                    format!("[@{}]: ", comment.author_username),
-                    Style::default().fg(Color::Cyan),
-                ),
-                Span::raw(&comment.content),
-            ]);
-            ListItem::new(content)
+            let header_prefix = format!("[{}][@{}]: ", timestamp, comment.author_username);
+            let header_len = header_prefix.len();
+
+            // Calculate available width for content (after header on first line)
+            let content_width = available_width.saturating_sub(header_len);
+
+            // Wrap the comment content
+            let wrapped_lines = wrap_text(&comment.content, content_width);
+
+            // Build multi-line ListItem
+            let mut lines: Vec<Line> = Vec::new();
+            for (i, line_text) in wrapped_lines.iter().enumerate() {
+                if i == 0 {
+                    // First line: header + content
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("[{}]", timestamp),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::styled(
+                            format!("[@{}]: ", comment.author_username),
+                            Style::default().fg(Color::Cyan),
+                        ),
+                        Span::raw(line_text.clone()),
+                    ]));
+                } else {
+                    // Continuation lines: indent to align with content
+                    let indent = " ".repeat(header_len);
+                    lines.push(Line::from(Span::raw(format!("{}{}", indent, line_text))));
+                }
+            }
+
+            ListItem::new(lines)
         })
         .collect();
 

@@ -173,11 +173,11 @@ A terminal-based TODO application with kanban boards, knowledge base, and integr
 - [x] POST /api/v1/workspaces/{wid}/documents/{id}/move - Move in tree
 
 ### 5.2 Knowledge Base TUI
-- [ ] DocumentTree component (collapsible, Tab to expand)
-- [ ] DocumentViewer (markdown rendering)
-- [ ] DocumentEditor
-- [ ] Navigate tree with j/k, expand/collapse with Tab
-- [ ] Create/delete documents (Ctrl+N, Ctrl+D)
+- [x] DocumentTree component (collapsible, h/l to expand)
+- [x] DocumentViewer (text with wrapping)
+- [x] DocumentEditor
+- [x] Navigate tree with j/k, expand/collapse with h/l
+- [x] Create/delete documents (n/d keys, Ctrl+K to open KB)
 
 ### 5.3 Task-Document Linking
 - [ ] POST /api/v1/workspaces/{wid}/documents/{id}/tasks - Link task

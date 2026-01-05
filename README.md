@@ -13,6 +13,7 @@ A terminal-based TODO application with kanban boards, full-text search, and mult
 - **Tags** - Color-coded labels for task organization
 - **Comments** - Threaded discussions on tasks with author attribution
 - **Filtering & Sorting** - Filter by priority, tags, assignee, due date; save presets
+- **Knowledge Base** - Hierarchical document tree for notes and documentation
 - **Email Verification** - Secure account activation with one-time codes
 - **Self-hosted** - Run on your own infrastructure
 
@@ -120,6 +121,18 @@ REFRESH_TOKEN_EXPIRES_IN=604800
 | `r` | Change role (in member panel) |
 | `T` | Tag management |
 
+### Knowledge Base
+| Key | Action |
+|-----|--------|
+| `Ctrl+K` | Open Knowledge Base |
+| `j/k` | Navigate documents |
+| `l` | Expand document |
+| `h` | Collapse document |
+| `n` | New document (child if expanded) |
+| `e` | Edit document |
+| `d` | Delete document |
+| `Alt+Enter` | Save (when editing) |
+
 ### General
 | Key | Action |
 |-----|--------|
@@ -149,9 +162,11 @@ See [docs/roadmap.md](docs/roadmap.md) for the full development roadmap.
 - Phase 2: Core Task Management (CRUD, kanban, comments)
 - Phase 3: Search & Filtering (FTS, fuzzy matching, filter presets)
 - Phase 4: Workspaces & Multi-user (invitations, member management, role-based access)
+- Phase 5.1-5.2: Knowledge Base (document storage API, tree navigation TUI)
 
 **Next:**
-- Phase 5: Knowledge Base (hierarchical documents, task linking)
+- Phase 5.3-5.4: Task-document linking, document search
+- Phase 6: Integrations (YouTrack, GitHub, Telegram)
 
 ## License
 

@@ -95,6 +95,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         View::WorkspaceSelect => draw_workspace_select(f, app),
         View::Dashboard => draw_dashboard(f, app),
         View::TaskDetail => draw_task_detail(f, app),
+        View::KnowledgeBase => draw_knowledge_base(f, app),
     }
 
     // Draw error overlay if present
@@ -2357,6 +2358,355 @@ fn draw_preset_panel(f: &mut Frame, app: &App) {
     }
     .alignment(Alignment::Center);
     f.render_widget(hint, chunks[2]);
+}
+
+fn draw_knowledge_base(f: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Main content
+            Constraint::Length(1), // Status bar
+        ])
+        .split(f.area());
+
+    // Header
+    draw_header(f, chunks[0], app);
+
+    // Main content: split into tree and document viewer
+    let content_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(30), // Document tree
+            Constraint::Percentage(70), // Document content
+        ])
+        .split(chunks[1]);
+
+    // Draw document tree
+    draw_document_tree(f, content_chunks[0], app);
+
+    // Draw document content/editor
+    draw_document_content(f, content_chunks[1], app);
+
+    // Status bar
+    draw_kb_status_bar(f, chunks[2], app);
+
+    // Draw create document popup if active
+    if app.kb_creating {
+        draw_kb_create_popup(f, app);
+    }
+
+    // Draw delete confirmation popup if active
+    if app.kb_confirming_delete {
+        draw_kb_delete_confirm_popup(f, app);
+    }
+}
+
+fn draw_document_tree(f: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .title(" Documents ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if app.kb_visible_list.is_empty() {
+        let empty = Paragraph::new("No documents. Press 'n' to create one.")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+        f.render_widget(empty, inner);
+        return;
+    }
+
+    // Build list items from visible tree
+    let items: Vec<ListItem> = app
+        .kb_visible_list
+        .iter()
+        .enumerate()
+        .map(|(i, (doc, depth))| {
+            let is_selected = i == app.kb_selected_idx;
+            let style = if is_selected {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else {
+                Style::default()
+            };
+
+            // Determine expand/collapse indicator (all docs can be expanded)
+            let indicator = if app.kb_expanded.contains(&doc.id) {
+                "▼ "
+            } else {
+                "▶ "
+            };
+
+            // Build indentation
+            let indent = "  ".repeat(*depth);
+
+            // Truncate title if needed
+            let available_width = area.width.saturating_sub(4 + (depth * 2) as u16 + 2) as usize;
+            let title = if doc.title.len() > available_width {
+                format!("{}...", &doc.title[..available_width.saturating_sub(3)])
+            } else {
+                doc.title.clone()
+            };
+
+            ListItem::new(Line::from(vec![
+                Span::styled(indent, style),
+                Span::styled(indicator, Style::default().fg(Color::Yellow)),
+                Span::styled(title, style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items);
+    f.render_widget(list, inner);
+}
+
+fn draw_document_content(f: &mut Frame, area: Rect, app: &App) {
+    if app.kb_editing {
+        draw_document_editor(f, area, app);
+        return;
+    }
+
+    let block = Block::default()
+        .title(" Content ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    match &app.kb_selected_doc {
+        Some(doc) => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(2), // Title
+                    Constraint::Min(0),    // Content
+                ])
+                .split(inner);
+
+            // Document title
+            let title = Paragraph::new(Line::from(vec![
+                Span::styled("# ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    &doc.title,
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            f.render_widget(title, chunks[0]);
+
+            // Document content with text wrapping
+            let content_width = chunks[1].width.saturating_sub(2) as usize;
+            let content_text = doc.content.as_deref().unwrap_or("(No content)");
+            let wrapped_lines = wrap_text(content_text, content_width);
+
+            let content_lines: Vec<Line> = wrapped_lines
+                .iter()
+                .map(|line| Line::from(Span::raw(line.clone())))
+                .collect();
+
+            let content = Paragraph::new(content_lines)
+                .style(Style::default().fg(if doc.content.is_some() {
+                    Color::White
+                } else {
+                    Color::DarkGray
+                }));
+            f.render_widget(content, chunks[1]);
+        }
+        None => {
+            let empty = Paragraph::new("Select a document to view its content")
+                .style(Style::default().fg(Color::DarkGray))
+                .alignment(Alignment::Center);
+            f.render_widget(empty, inner);
+        }
+    }
+}
+
+fn draw_document_editor(f: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .title(" Edit Document ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(3), // Title input
+            Constraint::Min(0),    // Content input
+        ])
+        .split(inner);
+
+    // Title input
+    let title_block = Block::default()
+        .title(" Title ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let title_input = Paragraph::new(app.kb_edit_title.as_str()).block(title_block);
+    f.render_widget(title_input, chunks[0]);
+
+    // Content input
+    let content_block = Block::default()
+        .title(" Content ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Gray));
+    let content_input = Paragraph::new(app.kb_edit_content.as_str())
+        .block(content_block)
+        .wrap(Wrap { trim: false });
+    f.render_widget(content_input, chunks[1]);
+
+    // Set cursor position (on title field)
+    f.set_cursor_position((
+        chunks[0].x + 1 + app.kb_edit_title.len() as u16,
+        chunks[0].y + 1,
+    ));
+}
+
+fn draw_kb_status_bar(f: &mut Frame, area: Rect, app: &App) {
+    let (mode, mode_color) = if app.kb_editing {
+        ("EDIT", Color::Yellow)
+    } else if app.kb_creating {
+        ("CREATE", Color::Green)
+    } else if app.kb_confirming_delete {
+        ("DELETE", Color::Red)
+    } else {
+        ("NORMAL", Color::Blue)
+    };
+
+    let hints = if app.kb_editing {
+        "Enter: newline | Alt+Enter: save | Esc: cancel"
+    } else if app.kb_creating {
+        "Enter: create | Esc: cancel"
+    } else if app.kb_confirming_delete {
+        "y: confirm | n/Esc: cancel"
+    } else {
+        "j/k: nav | l: expand | n: new (child if expanded) | e: edit | d: del | q: close"
+    };
+
+    let status = Paragraph::new(Line::from(vec![
+        Span::styled(
+            format!(" {} ", mode),
+            Style::default().bg(mode_color).fg(Color::White),
+        ),
+        Span::raw(" "),
+        Span::styled(hints, Style::default().fg(Color::DarkGray)),
+    ]));
+
+    f.render_widget(status, area);
+}
+
+fn draw_kb_create_popup(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 30, f.area());
+
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" New Document ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(3), // Title input
+            Constraint::Length(2), // Parent info
+            Constraint::Length(2), // Hint
+            Constraint::Min(0),    // Spacer
+        ])
+        .split(inner);
+
+    // Title input
+    let title_block = Block::default()
+        .title(" Title ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let title_input = Paragraph::new(app.kb_create_title.as_str()).block(title_block);
+    f.render_widget(title_input, chunks[0]);
+
+    // Parent info
+    let parent_text = match app.kb_create_parent_id {
+        Some(pid) => {
+            let parent_name = app
+                .kb_documents
+                .iter()
+                .find(|d| d.id == pid)
+                .map(|d| d.title.as_str())
+                .unwrap_or("Unknown");
+            format!("Creating under: {}", parent_name)
+        }
+        None => "Creating at root level".to_string(),
+    };
+    let parent_info = Paragraph::new(parent_text)
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    f.render_widget(parent_info, chunks[1]);
+
+    // Hint
+    let hint = Paragraph::new("Enter: create | Esc: cancel")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    f.render_widget(hint, chunks[2]);
+
+    // Set cursor position
+    f.set_cursor_position((
+        chunks[0].x + 1 + app.kb_create_title.len() as u16,
+        chunks[0].y + 1,
+    ));
+}
+
+fn draw_kb_delete_confirm_popup(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 20, f.area());
+
+    f.render_widget(Clear, area);
+
+    let doc_title = app
+        .kb_visible_list
+        .get(app.kb_selected_idx)
+        .map(|(doc, _)| doc.title.as_str())
+        .unwrap_or("Unknown");
+
+    let block = Block::default()
+        .title(" Confirm Delete ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(2), // Message
+            Constraint::Length(2), // Hint
+            Constraint::Min(0),    // Spacer
+        ])
+        .split(inner);
+
+    let message = Paragraph::new(vec![
+        Line::from(Span::raw("Delete document:")),
+        Line::from(Span::styled(
+            format!("\"{}\"", doc_title),
+            Style::default().fg(Color::Yellow),
+        )),
+    ])
+    .alignment(Alignment::Center);
+    f.render_widget(message, chunks[0]);
+
+    let hint = Paragraph::new("y: yes, delete | n: no, cancel")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    f.render_widget(hint, chunks[1]);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

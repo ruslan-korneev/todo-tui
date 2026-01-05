@@ -1,8 +1,9 @@
 use anyhow::Result;
 use chrono::NaiveDate;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use todo_shared::api::{CreateTaskRequest, SearchResultItem, TaskListParams, UpdateTaskRequest, WorkspaceMemberWithUser};
-use todo_shared::{CommentWithAuthor, Priority, Tag, Task, TaskStatus, User, Workspace, WorkspaceWithRole};
+use std::collections::HashSet;
+use todo_shared::api::{CreateDocumentRequest, CreateTaskRequest, SearchResultItem, TaskListParams, UpdateDocumentRequest, UpdateTaskRequest, WorkspaceMemberWithUser};
+use todo_shared::{CommentWithAuthor, Document, Priority, Tag, Task, TaskStatus, User, Workspace, WorkspaceWithRole};
 use tokio::sync::mpsc;
 
 use crate::api::{ApiClient, UserPreferences};
@@ -29,6 +30,7 @@ pub enum View {
     WorkspaceSelect,
     Dashboard,
     TaskDetail,
+    KnowledgeBase,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,6 +283,20 @@ pub struct App {
     pub inviting_member: bool,
     pub invite_email: String,
     pub invite_role_idx: usize, // 0=Reader, 1=Editor, 2=Admin
+
+    // Knowledge Base state
+    pub kb_documents: Vec<Document>,
+    pub kb_visible_list: Vec<(Document, usize)>, // (doc, depth) for rendering
+    pub kb_selected_idx: usize,
+    pub kb_expanded: HashSet<uuid::Uuid>,
+    pub kb_selected_doc: Option<Document>,
+    pub kb_editing: bool,
+    pub kb_edit_content: String,
+    pub kb_edit_title: String,
+    pub kb_creating: bool,
+    pub kb_create_title: String,
+    pub kb_create_parent_id: Option<uuid::Uuid>,
+    pub kb_confirming_delete: bool,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -389,6 +405,18 @@ impl App {
             inviting_member: false,
             invite_email: String::new(),
             invite_role_idx: 0,
+            kb_documents: Vec::new(),
+            kb_visible_list: Vec::new(),
+            kb_selected_idx: 0,
+            kb_expanded: HashSet::new(),
+            kb_selected_doc: None,
+            kb_editing: false,
+            kb_edit_content: String::new(),
+            kb_edit_title: String::new(),
+            kb_creating: false,
+            kb_create_title: String::new(),
+            kb_create_parent_id: None,
+            kb_confirming_delete: false,
         }
     }
 
@@ -428,6 +456,7 @@ impl App {
             View::WorkspaceSelect => self.handle_workspace_select_key(key, tx).await,
             View::Dashboard => self.handle_dashboard_key(key, tx).await,
             View::TaskDetail => self.handle_task_detail_key(key, tx).await,
+            View::KnowledgeBase => self.handle_knowledge_base_key(key, tx).await,
         }
     }
 
@@ -833,6 +862,10 @@ impl App {
             KeyCode::Char('h') | KeyCode::Left => self.move_left(),
             KeyCode::Char('l') | KeyCode::Right => self.move_right(),
             KeyCode::Char('j') | KeyCode::Down => self.move_down(),
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Open Knowledge Base
+                self.open_knowledge_base().await;
+            }
             KeyCode::Char('k') | KeyCode::Up => self.move_up(),
             KeyCode::Char('m') => {
                 // Enter move mode if there's a selected task
@@ -2800,5 +2833,344 @@ impl App {
             }
             Err(e) => Err(e),
         }
+    }
+
+    // ============ Knowledge Base ============
+
+    async fn open_knowledge_base(&mut self) {
+        let workspace_id = match &self.current_workspace {
+            Some(w) => w.id,
+            None => return,
+        };
+
+        self.set_loading(true, "Loading knowledge base...");
+
+        match self.api.list_documents(workspace_id).await {
+            Ok(docs) => {
+                self.kb_documents = docs;
+                self.build_kb_visible_list();
+                self.kb_selected_idx = 0;
+                self.kb_selected_doc = self.kb_visible_list.first().map(|(d, _)| d.clone());
+                self.view = View::KnowledgeBase;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to load documents: {}", e));
+            }
+        }
+
+        self.set_loading(false, "");
+    }
+
+    fn build_kb_visible_list(&mut self) {
+        self.kb_visible_list.clear();
+
+        // Clone documents to avoid borrow issues
+        let docs = self.kb_documents.clone();
+        let expanded = self.kb_expanded.clone();
+
+        // Build the list iteratively using a stack
+        let mut stack: Vec<(Document, usize)> = Vec::new();
+
+        // Get root documents (no parent)
+        let mut roots: Vec<Document> = docs
+            .iter()
+            .filter(|d| d.parent_id.is_none())
+            .cloned()
+            .collect();
+        roots.sort_by(|a, b| b.title.cmp(&a.title)); // Reverse for stack
+
+        for doc in roots {
+            stack.push((doc, 0));
+        }
+
+        while let Some((doc, depth)) = stack.pop() {
+            let doc_id = doc.id;
+            self.kb_visible_list.push((doc, depth));
+
+            // If expanded, add children
+            if expanded.contains(&doc_id) {
+                let mut children: Vec<Document> = docs
+                    .iter()
+                    .filter(|d| d.parent_id == Some(doc_id))
+                    .cloned()
+                    .collect();
+                children.sort_by(|a, b| b.title.cmp(&a.title)); // Reverse for stack
+
+                for child in children {
+                    stack.push((child, depth + 1));
+                }
+            }
+        }
+    }
+
+
+    async fn handle_knowledge_base_key(
+        &mut self,
+        key: KeyEvent,
+        _tx: mpsc::Sender<AppEvent>,
+    ) -> Result<bool> {
+        // Handle delete confirmation
+        if self.kb_confirming_delete {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.do_delete_document().await;
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    self.kb_confirming_delete = false;
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
+        // Handle create document
+        if self.kb_creating {
+            match key.code {
+                KeyCode::Esc => {
+                    self.kb_creating = false;
+                    self.kb_create_title.clear();
+                    self.kb_create_parent_id = None;
+                    self.vim_mode = VimMode::Normal;
+                }
+                KeyCode::Enter => {
+                    if !self.kb_create_title.is_empty() {
+                        self.do_create_document().await;
+                    }
+                }
+                KeyCode::Char(c) => {
+                    self.kb_create_title.push(c);
+                }
+                KeyCode::Backspace => {
+                    self.kb_create_title.pop();
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
+        // Handle editing document
+        if self.kb_editing {
+            match key.code {
+                KeyCode::Esc => {
+                    self.kb_editing = false;
+                    self.kb_edit_title.clear();
+                    self.kb_edit_content.clear();
+                    self.vim_mode = VimMode::Normal;
+                }
+                KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+                    // Save on Alt+Enter
+                    self.do_update_document().await;
+                }
+                KeyCode::Enter => {
+                    self.kb_edit_content.push('\n');
+                }
+                KeyCode::Char(c) => {
+                    self.kb_edit_content.push(c);
+                }
+                KeyCode::Backspace => {
+                    self.kb_edit_content.pop();
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
+        // Normal mode navigation
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                // Return to dashboard
+                self.view = View::Dashboard;
+                self.kb_selected_doc = None;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.kb_visible_list.is_empty() {
+                    self.kb_selected_idx = (self.kb_selected_idx + 1).min(self.kb_visible_list.len() - 1);
+                    self.kb_selected_doc = self.kb_visible_list.get(self.kb_selected_idx).map(|(d, _)| d.clone());
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.kb_selected_idx > 0 {
+                    self.kb_selected_idx -= 1;
+                    self.kb_selected_doc = self.kb_visible_list.get(self.kb_selected_idx).map(|(d, _)| d.clone());
+                }
+            }
+            KeyCode::Char('l') | KeyCode::Right | KeyCode::Tab => {
+                // Expand node (any doc can be expanded to create children under it)
+                if let Some((doc, _)) = self.kb_visible_list.get(self.kb_selected_idx) {
+                    if !self.kb_expanded.contains(&doc.id) {
+                        self.kb_expanded.insert(doc.id);
+                        self.build_kb_visible_list();
+                    }
+                }
+            }
+            KeyCode::Char('h') | KeyCode::Left | KeyCode::BackTab => {
+                // Collapse node or go to parent
+                if let Some((doc, _)) = self.kb_visible_list.get(self.kb_selected_idx).cloned() {
+                    if self.kb_expanded.contains(&doc.id) {
+                        // Collapse
+                        self.kb_expanded.remove(&doc.id);
+                        self.build_kb_visible_list();
+                    } else if let Some(parent_id) = doc.parent_id {
+                        // Go to parent
+                        if let Some(pos) = self.kb_visible_list.iter().position(|(d, _)| d.id == parent_id) {
+                            self.kb_selected_idx = pos;
+                            self.kb_selected_doc = self.kb_visible_list.get(pos).map(|(d, _)| d.clone());
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('n') => {
+                // Create new document
+                self.kb_creating = true;
+                self.kb_create_title.clear();
+                // Use current doc as parent if expanded, otherwise sibling
+                if let Some((doc, _)) = self.kb_visible_list.get(self.kb_selected_idx) {
+                    if self.kb_expanded.contains(&doc.id) {
+                        self.kb_create_parent_id = Some(doc.id);
+                    } else {
+                        self.kb_create_parent_id = doc.parent_id;
+                    }
+                }
+                self.vim_mode = VimMode::Insert;
+            }
+            KeyCode::Char('e') => {
+                // Edit current document
+                if let Some(doc) = &self.kb_selected_doc {
+                    self.kb_editing = true;
+                    self.kb_edit_title = doc.title.clone();
+                    self.kb_edit_content = doc.content.clone().unwrap_or_default();
+                    self.vim_mode = VimMode::Insert;
+                }
+            }
+            KeyCode::Char('d') => {
+                // Delete document
+                if self.kb_selected_doc.is_some() {
+                    self.kb_confirming_delete = true;
+                }
+            }
+            KeyCode::Enter => {
+                // Refresh the selected document content
+                if let Some((doc, _)) = self.kb_visible_list.get(self.kb_selected_idx) {
+                    self.kb_selected_doc = Some(doc.clone());
+                }
+            }
+            _ => {}
+        }
+
+        Ok(false)
+    }
+
+    async fn do_create_document(&mut self) {
+        let workspace_id = match &self.current_workspace {
+            Some(w) => w.id,
+            None => return,
+        };
+
+        let req = CreateDocumentRequest {
+            title: self.kb_create_title.clone(),
+            parent_id: self.kb_create_parent_id,
+            content: None,
+        };
+
+        self.set_loading(true, "Creating document...");
+
+        match self.api.create_document(workspace_id, req).await {
+            Ok(doc) => {
+                // If parent was set, expand it
+                if let Some(parent_id) = self.kb_create_parent_id {
+                    self.kb_expanded.insert(parent_id);
+                }
+                self.kb_documents.push(doc.clone());
+                self.build_kb_visible_list();
+                // Select the new document
+                if let Some(pos) = self.kb_visible_list.iter().position(|(d, _)| d.id == doc.id) {
+                    self.kb_selected_idx = pos;
+                    self.kb_selected_doc = Some(doc);
+                }
+                self.kb_creating = false;
+                self.kb_create_title.clear();
+                self.kb_create_parent_id = None;
+                self.vim_mode = VimMode::Normal;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to create document: {}", e));
+            }
+        }
+
+        self.set_loading(false, "");
+    }
+
+    async fn do_update_document(&mut self) {
+        let workspace_id = match &self.current_workspace {
+            Some(w) => w.id,
+            None => return,
+        };
+
+        let doc_id = match &self.kb_selected_doc {
+            Some(d) => d.id,
+            None => return,
+        };
+
+        let req = UpdateDocumentRequest {
+            title: Some(self.kb_edit_title.clone()),
+            content: Some(self.kb_edit_content.clone()),
+        };
+
+        self.set_loading(true, "Updating document...");
+
+        match self.api.update_document(workspace_id, doc_id, req).await {
+            Ok(updated) => {
+                // Update in local list
+                if let Some(doc) = self.kb_documents.iter_mut().find(|d| d.id == doc_id) {
+                    *doc = updated.clone();
+                }
+                self.kb_selected_doc = Some(updated);
+                self.build_kb_visible_list();
+                self.kb_editing = false;
+                self.kb_edit_title.clear();
+                self.kb_edit_content.clear();
+                self.vim_mode = VimMode::Normal;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to update document: {}", e));
+            }
+        }
+
+        self.set_loading(false, "");
+    }
+
+    async fn do_delete_document(&mut self) {
+        let workspace_id = match &self.current_workspace {
+            Some(w) => w.id,
+            None => return,
+        };
+
+        let doc_id = match &self.kb_selected_doc {
+            Some(d) => d.id,
+            None => return,
+        };
+
+        self.set_loading(true, "Deleting document...");
+
+        match self.api.delete_document(workspace_id, doc_id).await {
+            Ok(_) => {
+                // Remove from local list (and any children)
+                self.kb_documents.retain(|d| d.id != doc_id && d.parent_id != Some(doc_id));
+                self.kb_expanded.remove(&doc_id);
+                self.build_kb_visible_list();
+                // Adjust selection
+                if self.kb_selected_idx >= self.kb_visible_list.len() {
+                    self.kb_selected_idx = self.kb_visible_list.len().saturating_sub(1);
+                }
+                self.kb_selected_doc = self.kb_visible_list.get(self.kb_selected_idx).map(|(d, _)| d.clone());
+                self.kb_confirming_delete = false;
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to delete document: {}", e));
+                self.kb_confirming_delete = false;
+            }
+        }
+
+        self.set_loading(false, "");
     }
 }

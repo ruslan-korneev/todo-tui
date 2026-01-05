@@ -2,15 +2,16 @@ use anyhow::Result;
 use reqwest::{Client, StatusCode};
 use todo_shared::{
     api::{
-        AuthResponse, CreateCommentRequest, CreateStatusRequest, CreateTagRequest,
-        CreateTaskRequest, CreateWorkspaceRequest, InviteDetails, LoginRequest, MoveTaskRequest,
-        RefreshRequest, RegisterRequest, RegisterResponse, ResendVerificationRequest,
-        SearchResponse, SetTaskTagsRequest, TaskListParams, UpdateCommentRequest,
-        UpdateStatusRequest, UpdateTagRequest, UpdateTaskRequest, UpdateWorkspaceRequest,
-        VerifyEmailRequest, WorkspaceInvite, WorkspaceMemberWithUser,
+        AuthResponse, CreateCommentRequest, CreateDocumentRequest, CreateStatusRequest,
+        CreateTagRequest, CreateTaskRequest, CreateWorkspaceRequest, InviteDetails, LoginRequest,
+        MoveTaskRequest, RefreshRequest, RegisterRequest, RegisterResponse,
+        ResendVerificationRequest, SearchResponse, SetTaskTagsRequest, TaskListParams,
+        UpdateCommentRequest, UpdateDocumentRequest, UpdateStatusRequest, UpdateTagRequest,
+        UpdateTaskRequest, UpdateWorkspaceRequest, VerifyEmailRequest, WorkspaceInvite,
+        WorkspaceMemberWithUser,
     },
-    CommentWithAuthor, Tag, Task, TaskStatus, User, Workspace, WorkspaceRole, WorkspaceSettings,
-    WorkspaceWithRole,
+    CommentWithAuthor, Document, Tag, Task, TaskStatus, User, Workspace, WorkspaceRole,
+    WorkspaceSettings, WorkspaceWithRole,
 };
 use uuid::Uuid;
 
@@ -1043,5 +1044,96 @@ impl ApiClient {
             .await?;
 
         self.handle_response(response).await
+    }
+
+    // ============ Documents ============
+
+    pub async fn list_documents(&self, workspace_id: Uuid) -> Result<Vec<Document>, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let response = self
+            .client
+            .get(&self.url(&format!("/workspaces/{}/documents", workspace_id)))
+            .header("Authorization", &auth)
+            .send()
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    pub async fn get_document(
+        &self,
+        workspace_id: Uuid,
+        doc_id: Uuid,
+    ) -> Result<Document, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let response = self
+            .client
+            .get(&self.url(&format!(
+                "/workspaces/{}/documents/{}",
+                workspace_id, doc_id
+            )))
+            .header("Authorization", &auth)
+            .send()
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    pub async fn create_document(
+        &self,
+        workspace_id: Uuid,
+        req: CreateDocumentRequest,
+    ) -> Result<Document, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let response = self
+            .client
+            .post(&self.url(&format!("/workspaces/{}/documents", workspace_id)))
+            .header("Authorization", &auth)
+            .json(&req)
+            .send()
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    pub async fn update_document(
+        &self,
+        workspace_id: Uuid,
+        doc_id: Uuid,
+        req: UpdateDocumentRequest,
+    ) -> Result<Document, ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let response = self
+            .client
+            .patch(&self.url(&format!(
+                "/workspaces/{}/documents/{}",
+                workspace_id, doc_id
+            )))
+            .header("Authorization", &auth)
+            .json(&req)
+            .send()
+            .await?;
+
+        self.handle_response(response).await
+    }
+
+    pub async fn delete_document(&self, workspace_id: Uuid, doc_id: Uuid) -> Result<(), ApiError> {
+        let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
+
+        let response = self
+            .client
+            .delete(&self.url(&format!(
+                "/workspaces/{}/documents/{}",
+                workspace_id, doc_id
+            )))
+            .header("Authorization", &auth)
+            .send()
+            .await?;
+
+        self.handle_empty_response(response).await
     }
 }

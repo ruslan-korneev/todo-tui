@@ -40,6 +40,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     // Draw based on current view
     match app.view {
         View::Login => draw_login(f, app),
+        View::EmailVerification => draw_email_verification(f, app),
         View::VerifyingAuth => draw_loading(f, "Verifying authentication..."),
         View::WorkspaceSelect => draw_workspace_select(f, app),
         View::Dashboard => draw_dashboard(f, app),
@@ -61,7 +62,7 @@ fn draw_login(f: &mut Frame, app: &App) {
     let area = f.area();
 
     let is_register = app.auth_mode == AuthMode::Register;
-    let form_height = if is_register { 15 } else { 12 };
+    let form_height = if is_register { 18 } else { 12 }; // 4 fields + hint for register
 
     // Center the login form
     let vertical = Layout::default()
@@ -94,9 +95,10 @@ fn draw_login(f: &mut Frame, app: &App) {
     let inner = form_block.inner(form_area);
     f.render_widget(form_block, form_area);
 
-    // Form layout
+    // Form layout - Register: Username, Email, Password, DisplayName
     let constraints = if is_register {
         vec![
+            Constraint::Length(3), // Username
             Constraint::Length(3), // Email
             Constraint::Length(3), // Password
             Constraint::Length(3), // Display Name
@@ -118,35 +120,48 @@ fn draw_login(f: &mut Frame, app: &App) {
         .constraints(constraints)
         .split(inner);
 
-    // Email field
-    let email_style = if app.login_field == InputField::Email {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::Gray)
-    };
-    let email_block = Block::default()
-        .title(" Email ")
-        .borders(Borders::ALL)
-        .border_style(email_style);
-    let email_text = Paragraph::new(app.login_email.as_str()).block(email_block);
-    f.render_widget(email_text, form_chunks[0]);
+    if is_register {
+        // Username field
+        let username_style = if app.login_field == InputField::Username {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        let username_block = Block::default()
+            .title(" Username ")
+            .borders(Borders::ALL)
+            .border_style(username_style);
+        let username_text = Paragraph::new(app.register_username.as_str()).block(username_block);
+        f.render_widget(username_text, form_chunks[0]);
 
-    // Password field
-    let password_style = if app.login_field == InputField::Password {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::Gray)
-    };
-    let password_block = Block::default()
-        .title(" Password ")
-        .borders(Borders::ALL)
-        .border_style(password_style);
-    let password_display = "*".repeat(app.login_password.len());
-    let password_text = Paragraph::new(password_display.as_str()).block(password_block);
-    f.render_widget(password_text, form_chunks[1]);
+        // Email field
+        let email_style = if app.login_field == InputField::Email {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        let email_block = Block::default()
+            .title(" Email ")
+            .borders(Borders::ALL)
+            .border_style(email_style);
+        let email_text = Paragraph::new(app.login_email.as_str()).block(email_block);
+        f.render_widget(email_text, form_chunks[1]);
 
-    // Display Name field (register only)
-    let (hint_idx, cursor_display_name_idx) = if is_register {
+        // Password field
+        let password_style = if app.login_field == InputField::Password {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        let password_block = Block::default()
+            .title(" Password ")
+            .borders(Borders::ALL)
+            .border_style(password_style);
+        let password_display = "*".repeat(app.login_password.len());
+        let password_text = Paragraph::new(password_display.as_str()).block(password_block);
+        f.render_widget(password_text, form_chunks[2]);
+
+        // Display Name field
         let display_name_style = if app.login_field == InputField::DisplayName {
             Style::default().fg(Color::Yellow)
         } else {
@@ -158,46 +173,174 @@ fn draw_login(f: &mut Frame, app: &App) {
             .border_style(display_name_style);
         let display_name_text =
             Paragraph::new(app.register_display_name.as_str()).block(display_name_block);
-        f.render_widget(display_name_text, form_chunks[2]);
-        (3, Some(2))
-    } else {
-        (2, None)
-    };
+        f.render_widget(display_name_text, form_chunks[3]);
 
-    // Submit hint
-    let mode_text = match (app.vim_mode, is_register) {
-        (VimMode::Normal, false) => "'i' edit | Enter submit | 'r' register | 'q' quit",
-        (VimMode::Normal, true) => "'i' edit | Enter submit | 'l' login | 'q' quit",
-        (VimMode::Insert, false) => "Type to enter | Esc normal | Enter submit",
-        (VimMode::Insert, true) => "Type to enter | Esc normal | Enter submit",
+        // Submit hint
+        let mode_text = match app.vim_mode {
+            VimMode::Normal => "'i' edit | Enter submit | 'l' login | 'q' quit",
+            VimMode::Insert => "Type to enter | Esc normal | Enter submit",
+        };
+        let hint = Paragraph::new(mode_text)
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+        f.render_widget(hint, form_chunks[4]);
+
+        // Set cursor position in insert mode
+        if app.vim_mode == VimMode::Insert {
+            let (x, y) = match app.login_field {
+                InputField::Username => (
+                    form_chunks[0].x + 1 + app.register_username.len() as u16,
+                    form_chunks[0].y + 1,
+                ),
+                InputField::Email => (
+                    form_chunks[1].x + 1 + app.login_email.len() as u16,
+                    form_chunks[1].y + 1,
+                ),
+                InputField::Password => (
+                    form_chunks[2].x + 1 + app.login_password.len() as u16,
+                    form_chunks[2].y + 1,
+                ),
+                InputField::DisplayName => (
+                    form_chunks[3].x + 1 + app.register_display_name.len() as u16,
+                    form_chunks[3].y + 1,
+                ),
+                InputField::VerificationCode => (form_chunks[0].x + 1, form_chunks[0].y + 1),
+            };
+            f.set_cursor_position((x, y));
+        }
+    } else {
+        // Login mode - Email and Password only
+        // Email field
+        let email_style = if app.login_field == InputField::Email {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        let email_block = Block::default()
+            .title(" Email ")
+            .borders(Borders::ALL)
+            .border_style(email_style);
+        let email_text = Paragraph::new(app.login_email.as_str()).block(email_block);
+        f.render_widget(email_text, form_chunks[0]);
+
+        // Password field
+        let password_style = if app.login_field == InputField::Password {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        let password_block = Block::default()
+            .title(" Password ")
+            .borders(Borders::ALL)
+            .border_style(password_style);
+        let password_display = "*".repeat(app.login_password.len());
+        let password_text = Paragraph::new(password_display.as_str()).block(password_block);
+        f.render_widget(password_text, form_chunks[1]);
+
+        // Submit hint
+        let mode_text = match app.vim_mode {
+            VimMode::Normal => "'i' edit | Enter submit | 'r' register | 'q' quit",
+            VimMode::Insert => "Type to enter | Esc normal | Enter submit",
+        };
+        let hint = Paragraph::new(mode_text)
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+        f.render_widget(hint, form_chunks[2]);
+
+        // Set cursor position in insert mode
+        if app.vim_mode == VimMode::Insert {
+            let (x, y) = match app.login_field {
+                InputField::Email => (
+                    form_chunks[0].x + 1 + app.login_email.len() as u16,
+                    form_chunks[0].y + 1,
+                ),
+                InputField::Password => (
+                    form_chunks[1].x + 1 + app.login_password.len() as u16,
+                    form_chunks[1].y + 1,
+                ),
+                _ => (form_chunks[0].x + 1, form_chunks[0].y + 1),
+            };
+            f.set_cursor_position((x, y));
+        }
+    }
+}
+
+fn draw_email_verification(f: &mut Frame, app: &App) {
+    let area = f.area();
+
+    // Center the verification form
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(30),
+            Constraint::Length(12),
+            Constraint::Percentage(30),
+        ])
+        .split(area);
+
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(50),
+            Constraint::Percentage(25),
+        ])
+        .split(vertical[1]);
+
+    let form_area = horizontal[1];
+
+    // Form container
+    let form_block = Block::default()
+        .title(" Email Verification ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = form_block.inner(form_area);
+    f.render_widget(form_block, form_area);
+
+    let form_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(2), // Info text
+            Constraint::Length(3), // Code input
+            Constraint::Length(2), // Hint
+            Constraint::Min(0),    // Spacer
+        ])
+        .split(inner);
+
+    // Info text
+    let info_text = format!("Verification code sent to {}", app.verification_email);
+    let info = Paragraph::new(info_text)
+        .style(Style::default().fg(Color::White))
+        .alignment(Alignment::Center);
+    f.render_widget(info, form_chunks[0]);
+
+    // Code input field
+    let code_style = Style::default().fg(Color::Yellow);
+    let code_block = Block::default()
+        .title(" 6-Digit Code ")
+        .borders(Borders::ALL)
+        .border_style(code_style);
+    let code_text = Paragraph::new(app.verification_code.as_str())
+        .block(code_block)
+        .alignment(Alignment::Center);
+    f.render_widget(code_text, form_chunks[1]);
+
+    // Hint
+    let mode_text = match app.vim_mode {
+        VimMode::Normal => "'i' edit | Enter verify | 'r' resend | Esc back",
+        VimMode::Insert => "Type code | Esc normal | Enter verify",
     };
     let hint = Paragraph::new(mode_text)
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
-    f.render_widget(hint, form_chunks[hint_idx]);
+    f.render_widget(hint, form_chunks[2]);
 
     // Set cursor position in insert mode
     if app.vim_mode == VimMode::Insert {
-        let (x, y) = match app.login_field {
-            InputField::Email => (
-                form_chunks[0].x + 1 + app.login_email.len() as u16,
-                form_chunks[0].y + 1,
-            ),
-            InputField::Password => (
-                form_chunks[1].x + 1 + app.login_password.len() as u16,
-                form_chunks[1].y + 1,
-            ),
-            InputField::DisplayName => {
-                if let Some(idx) = cursor_display_name_idx {
-                    (
-                        form_chunks[idx].x + 1 + app.register_display_name.len() as u16,
-                        form_chunks[idx].y + 1,
-                    )
-                } else {
-                    (form_chunks[0].x + 1, form_chunks[0].y + 1)
-                }
-            }
-        };
+        let x = form_chunks[1].x + 1 + form_chunks[1].width / 2 - 3 + app.verification_code.len() as u16;
+        let y = form_chunks[1].y + 1;
         f.set_cursor_position((x, y));
     }
 }
@@ -1341,8 +1484,12 @@ fn draw_task_view_mode(f: &mut Frame, area: Rect, app: &App, task: &todo_shared:
             let timestamp = comment.created_at.format("%Y-%m-%d %H:%M").to_string();
             let content = Line::from(vec![
                 Span::styled(
-                    format!("[{}] ", timestamp),
+                    format!("[{}]", timestamp),
                     Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("[@{}]: ", comment.author_username),
+                    Style::default().fg(Color::Cyan),
                 ),
                 Span::raw(&comment.content),
             ]);

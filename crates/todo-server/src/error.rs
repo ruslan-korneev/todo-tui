@@ -13,6 +13,9 @@ pub enum AppError {
     #[error("Access denied")]
     Forbidden,
 
+    #[error("Email not verified")]
+    EmailNotVerified,
+
     #[error("Resource not found")]
     NotFound,
 
@@ -34,6 +37,10 @@ impl IntoResponse for AppError {
         let (status, message) = match &self {
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
             AppError::Forbidden => (StatusCode::FORBIDDEN, self.to_string()),
+            AppError::EmailNotVerified => (
+                StatusCode::FORBIDDEN,
+                "Email not verified. Please check your email for verification code.".to_string(),
+            ),
             AppError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),

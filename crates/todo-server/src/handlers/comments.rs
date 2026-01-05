@@ -5,7 +5,7 @@ use axum::{
 use chrono::Utc;
 use todo_shared::{
     api::{CreateCommentRequest, UpdateCommentRequest},
-    Comment, WorkspaceRole,
+    CommentWithAuthor, WorkspaceRole,
 };
 use uuid::Uuid;
 
@@ -50,23 +50,25 @@ async fn verify_task(
     Ok(())
 }
 
-type CommentRow = (
+type CommentWithAuthorRow = (
     Uuid,                  // id
     Uuid,                  // task_id
     Uuid,                  // user_id
+    String,                // author_username
     String,                // content
     chrono::DateTime<Utc>, // created_at
     chrono::DateTime<Utc>, // updated_at
 );
 
-fn row_to_comment(row: CommentRow) -> Comment {
-    Comment {
+fn row_to_comment(row: CommentWithAuthorRow) -> CommentWithAuthor {
+    CommentWithAuthor {
         id: row.0,
         task_id: row.1,
         user_id: row.2,
-        content: row.3,
-        created_at: row.4,
-        updated_at: row.5,
+        author_username: row.3,
+        content: row.4,
+        created_at: row.5,
+        updated_at: row.6,
     }
 }
 
@@ -75,16 +77,17 @@ pub async fn list_comments(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
     Path((workspace_id, task_id)): Path<(Uuid, Uuid)>,
-) -> Result<Json<Vec<Comment>>, AppError> {
+) -> Result<Json<Vec<CommentWithAuthor>>, AppError> {
     check_membership(&state, workspace_id, user.id).await?;
     verify_task(&state, task_id, workspace_id).await?;
 
-    let rows: Vec<CommentRow> = sqlx::query_as(
+    let rows: Vec<CommentWithAuthorRow> = sqlx::query_as(
         r#"
-        SELECT id, task_id, user_id, content, created_at, updated_at
-        FROM task_comments
-        WHERE task_id = $1
-        ORDER BY created_at ASC
+        SELECT c.id, c.task_id, c.user_id, u.username, c.content, c.created_at, c.updated_at
+        FROM task_comments c
+        JOIN users u ON u.id = c.user_id
+        WHERE c.task_id = $1
+        ORDER BY c.created_at ASC
         "#,
     )
     .bind(task_id)
@@ -101,7 +104,7 @@ pub async fn create_comment(
     Extension(user): Extension<AuthUser>,
     Path((workspace_id, task_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<CreateCommentRequest>,
-) -> Result<Json<Comment>, AppError> {
+) -> Result<Json<CommentWithAuthor>, AppError> {
     // Any member can comment
     check_membership(&state, workspace_id, user.id).await?;
     verify_task(&state, task_id, workspace_id).await?;
@@ -109,6 +112,15 @@ pub async fn create_comment(
     if req.content.trim().is_empty() {
         return Err(AppError::Validation("Comment content is required".to_string()));
     }
+
+    // Get the user's username
+    let username_row: Option<(String,)> =
+        sqlx::query_as("SELECT username FROM users WHERE id = $1")
+            .bind(user.id)
+            .fetch_optional(&state.db)
+            .await?;
+
+    let (username,) = username_row.ok_or(AppError::NotFound)?;
 
     let id = Uuid::new_v4();
     let now = Utc::now();
@@ -128,10 +140,11 @@ pub async fn create_comment(
     .execute(&state.db)
     .await?;
 
-    Ok(Json(Comment {
+    Ok(Json(CommentWithAuthor {
         id,
         task_id,
         user_id: user.id,
+        author_username: username,
         content: req.content,
         created_at: now,
         updated_at: now,
@@ -144,7 +157,7 @@ pub async fn update_comment(
     Extension(user): Extension<AuthUser>,
     Path((workspace_id, task_id, comment_id)): Path<(Uuid, Uuid, Uuid)>,
     Json(req): Json<UpdateCommentRequest>,
-) -> Result<Json<Comment>, AppError> {
+) -> Result<Json<CommentWithAuthor>, AppError> {
     check_membership(&state, workspace_id, user.id).await?;
     verify_task(&state, task_id, workspace_id).await?;
 
@@ -168,16 +181,28 @@ pub async fn update_comment(
 
     let now = Utc::now();
 
-    let row: CommentRow = sqlx::query_as(
+    sqlx::query(
         r#"
         UPDATE task_comments
         SET content = $1, updated_at = $2
         WHERE id = $3
-        RETURNING id, task_id, user_id, content, created_at, updated_at
         "#,
     )
     .bind(&req.content)
     .bind(now)
+    .bind(comment_id)
+    .execute(&state.db)
+    .await?;
+
+    // Fetch the updated comment with author
+    let row: CommentWithAuthorRow = sqlx::query_as(
+        r#"
+        SELECT c.id, c.task_id, c.user_id, u.username, c.content, c.created_at, c.updated_at
+        FROM task_comments c
+        JOIN users u ON u.id = c.user_id
+        WHERE c.id = $1
+        "#,
+    )
     .bind(comment_id)
     .fetch_one(&state.db)
     .await?;

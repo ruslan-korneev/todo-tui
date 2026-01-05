@@ -9,7 +9,8 @@ A terminal-based TODO application with kanban boards, full-text search, and mult
 - **Full-text Search** - PostgreSQL-powered search with fuzzy matching support
 - **Multi-user Workspaces** - Role-based access control (owner, admin, editor, reader)
 - **Task Management** - Priority levels, due dates, time estimates, and assignees
-- **Comments** - Threaded discussions on tasks
+- **Comments** - Threaded discussions on tasks with author attribution
+- **Email Verification** - Secure account activation with one-time codes
 - **Self-hosted** - Run on your own infrastructure
 
 ## Tech Stack
@@ -117,6 +118,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the full development roadmap.
 - Phase 1: Foundation (auth, database, basic TUI)
 - Phase 2: Core Task Management (CRUD, kanban, comments)
 - Phase 3: Search (FTS, fuzzy, search UI), Filtering, Ordering
+- Phase 4.0: User enhancements (username, email verification, comment author display)
 
 **In Progress:**
 - Phase 4: Member invitations

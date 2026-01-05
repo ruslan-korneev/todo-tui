@@ -26,7 +26,9 @@ pub fn create_router(db: DbPool, config: Config) -> Router {
     let public_auth_routes = Router::new()
         .route("/register", post(auth_handlers::register))
         .route("/login", post(auth_handlers::login))
-        .route("/refresh", post(auth_handlers::refresh));
+        .route("/refresh", post(auth_handlers::refresh))
+        .route("/verify-email", post(auth_handlers::verify_email))
+        .route("/resend-verification", post(auth_handlers::resend_verification));
 
     // Protected auth routes (need auth)
     let protected_auth_routes = Router::new()

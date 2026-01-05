@@ -4,11 +4,12 @@ use todo_shared::{
     api::{
         AuthResponse, CreateCommentRequest, CreateStatusRequest, CreateTagRequest,
         CreateTaskRequest, CreateWorkspaceRequest, LoginRequest, MoveTaskRequest, RefreshRequest,
-        RegisterRequest, SearchResponse, SetTaskTagsRequest, TaskListParams, UpdateCommentRequest,
-        UpdateStatusRequest, UpdateTagRequest, UpdateTaskRequest, UpdateWorkspaceRequest,
+        RegisterRequest, RegisterResponse, ResendVerificationRequest, SearchResponse,
+        SetTaskTagsRequest, TaskListParams, UpdateCommentRequest, UpdateStatusRequest,
+        UpdateTagRequest, UpdateTaskRequest, UpdateWorkspaceRequest, VerifyEmailRequest,
         WorkspaceMemberWithUser,
     },
-    Comment, Tag, Task, TaskStatus, User, Workspace, WorkspaceSettings, WorkspaceWithRole,
+    CommentWithAuthor, Tag, Task, TaskStatus, User, Workspace, WorkspaceSettings, WorkspaceWithRole,
 };
 use uuid::Uuid;
 
@@ -29,6 +30,8 @@ pub enum ApiError {
     Unauthorized,
     #[error("Access forbidden")]
     Forbidden,
+    #[error("Email not verified")]
+    EmailNotVerified,
     #[error("Resource not found")]
     NotFound,
     #[error("Validation error: {0}")]
@@ -97,7 +100,14 @@ impl ApiClient {
                 response.json().await.map_err(ApiError::Network)
             }
             StatusCode::UNAUTHORIZED => Err(ApiError::Unauthorized),
-            StatusCode::FORBIDDEN => Err(ApiError::Forbidden),
+            StatusCode::FORBIDDEN => {
+                let text = response.text().await.unwrap_or_default();
+                if text.contains("Email not verified") {
+                    Err(ApiError::EmailNotVerified)
+                } else {
+                    Err(ApiError::Forbidden)
+                }
+            }
             StatusCode::NOT_FOUND => Err(ApiError::NotFound),
             StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
                 let text = response.text().await.unwrap_or_default();
@@ -117,7 +127,14 @@ impl ApiClient {
         match status {
             StatusCode::OK | StatusCode::NO_CONTENT => Ok(()),
             StatusCode::UNAUTHORIZED => Err(ApiError::Unauthorized),
-            StatusCode::FORBIDDEN => Err(ApiError::Forbidden),
+            StatusCode::FORBIDDEN => {
+                let text = response.text().await.unwrap_or_default();
+                if text.contains("Email not verified") {
+                    Err(ApiError::EmailNotVerified)
+                } else {
+                    Err(ApiError::Forbidden)
+                }
+            }
             StatusCode::NOT_FOUND => Err(ApiError::NotFound),
             StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
                 let text = response.text().await.unwrap_or_default();
@@ -134,11 +151,13 @@ impl ApiClient {
 
     pub async fn register(
         &mut self,
+        username: &str,
         email: &str,
         password: &str,
         display_name: &str,
-    ) -> Result<User, ApiError> {
+    ) -> Result<RegisterResponse, ApiError> {
         let req = RegisterRequest {
+            username: username.to_string(),
             email: email.to_string(),
             password: password.to_string(),
             display_name: display_name.to_string(),
@@ -151,9 +170,25 @@ impl ApiClient {
             .send()
             .await?;
 
+        self.handle_response(response).await
+    }
+
+    pub async fn verify_email(&mut self, email: &str, code: &str) -> Result<User, ApiError> {
+        let req = VerifyEmailRequest {
+            email: email.to_string(),
+            code: code.to_string(),
+        };
+
+        let response = self
+            .client
+            .post(&format!("{}/api/v1/auth/verify-email", self.base_url))
+            .json(&req)
+            .send()
+            .await?;
+
         let auth: AuthResponse = self.handle_response(response).await?;
 
-        // Store tokens (same as login)
+        // Store tokens
         self.tokens = Some(AuthTokens {
             access_token: auth.access_token,
             refresh_token: auth.refresh_token,
@@ -166,6 +201,34 @@ impl ApiClient {
 
         // Fetch user details
         self.me().await
+    }
+
+    pub async fn resend_verification(&self, email: &str) -> Result<(), ApiError> {
+        let req = ResendVerificationRequest {
+            email: email.to_string(),
+        };
+
+        let response = self
+            .client
+            .post(&format!("{}/api/v1/auth/resend-verification", self.base_url))
+            .json(&req)
+            .send()
+            .await?;
+
+        // Just check for success, ignore the response body
+        let status = response.status();
+        match status {
+            StatusCode::OK => Ok(()),
+            StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
+                let text = response.text().await.unwrap_or_default();
+                Err(ApiError::Validation(text))
+            }
+            StatusCode::NOT_FOUND => Err(ApiError::NotFound),
+            _ => {
+                let text = response.text().await.unwrap_or_default();
+                Err(ApiError::Server(format!("{}: {}", status, text)))
+            }
+        }
     }
 
     pub async fn login(&mut self, email: &str, password: &str) -> Result<User, ApiError> {
@@ -685,7 +748,7 @@ impl ApiClient {
         &self,
         workspace_id: Uuid,
         task_id: Uuid,
-    ) -> Result<Vec<Comment>, ApiError> {
+    ) -> Result<Vec<CommentWithAuthor>, ApiError> {
         let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
 
         let response = self
@@ -706,7 +769,7 @@ impl ApiClient {
         workspace_id: Uuid,
         task_id: Uuid,
         content: &str,
-    ) -> Result<Comment, ApiError> {
+    ) -> Result<CommentWithAuthor, ApiError> {
         let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
 
         let req = CreateCommentRequest {
@@ -733,7 +796,7 @@ impl ApiClient {
         task_id: Uuid,
         comment_id: Uuid,
         content: &str,
-    ) -> Result<Comment, ApiError> {
+    ) -> Result<CommentWithAuthor, ApiError> {
         let auth = self.auth_header().ok_or(ApiError::Unauthorized)?;
 
         let req = UpdateCommentRequest {

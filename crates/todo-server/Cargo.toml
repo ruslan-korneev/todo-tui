@@ -42,3 +42,7 @@ tracing-subscriber.workspace = true
 
 # Config
 dotenvy.workspace = true
+
+# Utils
+rand = "0.8"
+regex = "1"

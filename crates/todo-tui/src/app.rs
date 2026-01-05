@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::NaiveDate;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use todo_shared::api::{CreateTaskRequest, SearchResultItem, TaskListParams, UpdateTaskRequest, WorkspaceMemberWithUser};
-use todo_shared::{Comment, Priority, Tag, Task, TaskStatus, User, Workspace, WorkspaceWithRole};
+use todo_shared::{CommentWithAuthor, Priority, Tag, Task, TaskStatus, User, Workspace, WorkspaceWithRole};
 use tokio::sync::mpsc;
 
 use crate::api::{ApiClient, UserPreferences};
@@ -24,6 +24,7 @@ pub const TAG_COLORS: &[&str] = &[
 #[allow(dead_code)] // Views for future implementation
 pub enum View {
     Login,
+    EmailVerification,
     VerifyingAuth,
     WorkspaceSelect,
     Dashboard,
@@ -44,9 +45,11 @@ pub enum AuthMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputField {
+    Username,
     Email,
     Password,
     DisplayName,
+    VerificationCode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +171,12 @@ pub struct App {
     pub login_email: String,
     pub login_password: String,
     pub login_field: InputField,
+    pub register_username: String,
     pub register_display_name: String,
+
+    // Email verification
+    pub verification_email: String,
+    pub verification_code: String,
 
     // Workspace selection
     pub workspaces: Vec<WorkspaceWithRole>,
@@ -187,7 +195,7 @@ pub struct App {
 
     // Task detail state
     pub selected_task_detail: Option<Task>,
-    pub task_comments: Vec<Comment>,
+    pub task_comments: Vec<CommentWithAuthor>,
     pub adding_comment: bool,
     pub new_comment_content: String,
 
@@ -297,7 +305,10 @@ impl App {
             login_email: String::new(),
             login_password: String::new(),
             login_field: InputField::Email,
+            register_username: String::new(),
             register_display_name: String::new(),
+            verification_email: String::new(),
+            verification_code: String::new(),
             workspaces: Vec::new(),
             selected_workspace_idx: 0,
             creating_workspace: false,
@@ -396,6 +407,7 @@ impl App {
 
         match self.view {
             View::Login => self.handle_login_key(key, tx).await,
+            View::EmailVerification => self.handle_verification_key(key, tx).await,
             View::VerifyingAuth => Ok(false), // No input during verification
             View::WorkspaceSelect => self.handle_workspace_select_key(key, tx).await,
             View::Dashboard => self.handle_dashboard_key(key, tx).await,
@@ -425,7 +437,7 @@ impl App {
             // Toggle between Login and Register modes
             KeyCode::Char('r') if self.vim_mode == VimMode::Normal => {
                 self.auth_mode = AuthMode::Register;
-                self.login_field = InputField::Email;
+                self.login_field = InputField::Username;
             }
             KeyCode::Char('l') if self.vim_mode == VimMode::Normal => {
                 self.auth_mode = AuthMode::Login;
@@ -435,15 +447,18 @@ impl App {
                 self.login_field = match (self.auth_mode, self.login_field) {
                     (AuthMode::Login, InputField::Email) => InputField::Password,
                     (AuthMode::Login, InputField::Password) => InputField::Email,
-                    (AuthMode::Login, InputField::DisplayName) => InputField::Email,
+                    (AuthMode::Login, _) => InputField::Email,
+                    (AuthMode::Register, InputField::Username) => InputField::Email,
                     (AuthMode::Register, InputField::Email) => InputField::Password,
                     (AuthMode::Register, InputField::Password) => InputField::DisplayName,
-                    (AuthMode::Register, InputField::DisplayName) => InputField::Email,
+                    (AuthMode::Register, InputField::DisplayName) => InputField::Username,
+                    (AuthMode::Register, _) => InputField::Username,
                 };
             }
             KeyCode::Char('j') | KeyCode::Down if self.vim_mode == VimMode::Normal => {
                 self.login_field = match (self.auth_mode, self.login_field) {
                     (AuthMode::Login, InputField::Email) => InputField::Password,
+                    (AuthMode::Register, InputField::Username) => InputField::Email,
                     (AuthMode::Register, InputField::Email) => InputField::Password,
                     (AuthMode::Register, InputField::Password) => InputField::DisplayName,
                     _ => self.login_field,
@@ -452,6 +467,7 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up if self.vim_mode == VimMode::Normal => {
                 self.login_field = match (self.auth_mode, self.login_field) {
                     (AuthMode::Login, InputField::Password) => InputField::Email,
+                    (AuthMode::Register, InputField::Email) => InputField::Username,
                     (AuthMode::Register, InputField::Password) => InputField::Email,
                     (AuthMode::Register, InputField::DisplayName) => InputField::Password,
                     _ => self.login_field,
@@ -465,7 +481,8 @@ impl App {
                         }
                     }
                     AuthMode::Register => {
-                        if !self.login_email.is_empty()
+                        if !self.register_username.is_empty()
+                            && !self.login_email.is_empty()
                             && !self.login_password.is_empty()
                             && !self.register_display_name.is_empty()
                         {
@@ -476,17 +493,67 @@ impl App {
             }
             KeyCode::Char(c) if self.vim_mode == VimMode::Insert => {
                 match self.login_field {
+                    InputField::Username => self.register_username.push(c),
                     InputField::Email => self.login_email.push(c),
                     InputField::Password => self.login_password.push(c),
                     InputField::DisplayName => self.register_display_name.push(c),
+                    InputField::VerificationCode => {} // Not used in login view
                 }
             }
             KeyCode::Backspace if self.vim_mode == VimMode::Insert => {
                 match self.login_field {
+                    InputField::Username => { self.register_username.pop(); }
                     InputField::Email => { self.login_email.pop(); }
                     InputField::Password => { self.login_password.pop(); }
                     InputField::DisplayName => { self.register_display_name.pop(); }
+                    InputField::VerificationCode => {} // Not used in login view
                 }
+            }
+            _ => {}
+        }
+
+        Ok(false)
+    }
+
+    async fn handle_verification_key(
+        &mut self,
+        key: KeyEvent,
+        tx: mpsc::Sender<AppEvent>,
+    ) -> Result<bool> {
+        if self.loading {
+            return Ok(false);
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                if self.vim_mode == VimMode::Insert {
+                    self.vim_mode = VimMode::Normal;
+                } else {
+                    // Go back to login
+                    self.view = View::Login;
+                    self.verification_code.clear();
+                }
+            }
+            KeyCode::Char('i') if self.vim_mode == VimMode::Normal => {
+                self.vim_mode = VimMode::Insert;
+            }
+            KeyCode::Char('r') if self.vim_mode == VimMode::Normal => {
+                // Resend verification code
+                self.do_resend_verification().await;
+            }
+            KeyCode::Enter => {
+                if !self.verification_code.is_empty() {
+                    self.do_verify_email(tx).await;
+                }
+            }
+            KeyCode::Char(c) if self.vim_mode == VimMode::Insert => {
+                // Only allow digits for verification code
+                if c.is_ascii_digit() && self.verification_code.len() < 6 {
+                    self.verification_code.push(c);
+                }
+            }
+            KeyCode::Backspace if self.vim_mode == VimMode::Insert => {
+                self.verification_code.pop();
             }
             _ => {}
         }
@@ -1877,20 +1944,61 @@ impl App {
         self.set_loading(false, "");
     }
 
-    async fn do_register(&mut self, tx: mpsc::Sender<AppEvent>) {
+    async fn do_register(&mut self, _tx: mpsc::Sender<AppEvent>) {
         self.set_loading(true, "Registering...");
 
+        let username = self.register_username.clone();
         let email = self.login_email.clone();
         let password = self.login_password.clone();
         let display_name = self.register_display_name.clone();
 
-        match self.api.register(&email, &password, &display_name).await {
+        match self.api.register(&username, &email, &password, &display_name).await {
+            Ok(response) => {
+                // Store email for verification
+                self.verification_email = response.email;
+                self.verification_code.clear();
+                self.login_field = InputField::VerificationCode;
+                self.vim_mode = VimMode::Normal;
+                self.view = View::EmailVerification;
+            }
+            Err(e) => {
+                self.set_error(format!("Registration failed: {}", e));
+            }
+        }
+
+        self.set_loading(false, "");
+    }
+
+    async fn do_verify_email(&mut self, tx: mpsc::Sender<AppEvent>) {
+        self.set_loading(true, "Verifying email...");
+
+        let email = self.verification_email.clone();
+        let code = self.verification_code.clone();
+
+        match self.api.verify_email(&email, &code).await {
             Ok(user) => {
                 self.user = Some(user);
                 let _ = tx.send(AppEvent::AuthSuccess).await;
             }
             Err(e) => {
-                self.set_error(format!("Registration failed: {}", e));
+                self.set_error(format!("Verification failed: {}", e));
+            }
+        }
+
+        self.set_loading(false, "");
+    }
+
+    async fn do_resend_verification(&mut self) {
+        self.set_loading(true, "Resending verification code...");
+
+        let email = self.verification_email.clone();
+
+        match self.api.resend_verification(&email).await {
+            Ok(()) => {
+                self.set_error("Verification code resent. Check server logs.".to_string());
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to resend: {}", e));
             }
         }
 

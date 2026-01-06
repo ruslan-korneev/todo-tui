@@ -513,12 +513,13 @@ fn draw_home(f: &mut Frame, app: &App) {
         ])
         .split(main_chunks[0]);
 
-    // Right panel: logo + quote
+    // Right panel: logo + calendar + quote
     let right_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8), // Logo
-            Constraint::Min(0),    // Quote
+            Constraint::Length(8),  // Logo
+            Constraint::Length(10), // Calendar
+            Constraint::Min(3),     // Quote
         ])
         .split(main_chunks[1]);
 
@@ -563,8 +564,11 @@ fn draw_home(f: &mut Frame, app: &App) {
     // Logo (figlet workspace name)
     draw_home_logo(f, right_chunks[0], app);
 
+    // Calendar
+    draw_home_calendar(f, right_chunks[1], app);
+
     // Quote
-    draw_home_quote(f, right_chunks[1], app);
+    draw_home_quote(f, right_chunks[2], app);
 }
 
 fn draw_home_menu(f: &mut Frame, area: Rect, app: &App) {
@@ -698,6 +702,33 @@ fn draw_home_logo(f: &mut Frame, area: Rect, app: &App) {
     // Use left alignment to preserve ASCII art internal alignment
     let paragraph = Paragraph::new(lines);
     f.render_widget(paragraph, centered_area);
+}
+
+fn draw_home_calendar(f: &mut Frame, area: Rect, app: &App) {
+    let title = format!(
+        " {} {} ",
+        crate::calendar::month_name(app.calendar_month),
+        app.calendar_year
+    );
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Blue));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let today = chrono::Local::now().date_naive();
+    let lines = crate::calendar::render_calendar(
+        app.calendar_year,
+        app.calendar_month,
+        &app.calendar_tasks,
+        today,
+    );
+
+    let paragraph = Paragraph::new(lines);
+    f.render_widget(paragraph, inner);
 }
 
 fn draw_home_quote(f: &mut Frame, area: Rect, app: &App) {

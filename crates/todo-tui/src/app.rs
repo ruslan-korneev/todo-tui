@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashSet;
 use todo_shared::api::{CreateDocumentRequest, CreateTaskRequest, SearchResultItem, TaskListParams, UpdateDocumentRequest, UpdateTaskRequest, WorkspaceMemberWithUser};
@@ -238,6 +238,9 @@ pub struct App {
     pub home_quote: Option<String>,
     pub home_quote_author: Option<String>,
     pub home_stats: todo_shared::api::WorkspaceStats,
+    pub calendar_year: i32,
+    pub calendar_month: u32,
+    pub calendar_tasks: std::collections::HashMap<NaiveDate, usize>,
 
     // Dashboard state
     pub current_workspace: Option<Workspace>,
@@ -424,6 +427,9 @@ impl App {
             home_quote: None,
             home_quote_author: None,
             home_stats: Default::default(),
+            calendar_year: chrono::Local::now().year(),
+            calendar_month: chrono::Local::now().month(),
+            calendar_tasks: std::collections::HashMap::new(),
             current_workspace: None,
             columns: Vec::new(),
             selected_column: 0,
@@ -3077,10 +3083,49 @@ impl App {
         self.home_quote = Some(quote);
         self.home_quote_author = Some(author);
 
-        // Load workspace stats
+        // Load workspace stats and calendar tasks
         if let Some(ref workspace) = self.current_workspace {
             if let Ok(stats) = self.api.get_workspace_stats(workspace.id).await {
                 self.home_stats = stats;
+            }
+
+            // Load tasks for calendar (current month)
+            self.load_calendar_tasks().await;
+        }
+    }
+
+    async fn load_calendar_tasks(&mut self) {
+        let Some(ref workspace) = self.current_workspace else { return };
+
+        // Calculate date range for current calendar month
+        let first_day = match NaiveDate::from_ymd_opt(self.calendar_year, self.calendar_month, 1) {
+            Some(d) => d,
+            None => return,
+        };
+
+        // Get last day of month
+        let last_day = if self.calendar_month == 12 {
+            NaiveDate::from_ymd_opt(self.calendar_year + 1, 1, 1)
+        } else {
+            NaiveDate::from_ymd_opt(self.calendar_year, self.calendar_month + 1, 1)
+        }
+        .and_then(|d| d.pred_opt())
+        .unwrap_or(first_day);
+
+        // Fetch tasks with due dates in this range
+        let params = TaskListParams {
+            due_after: Some(first_day),
+            due_before: Some(last_day),
+            limit: Some(500),
+            ..Default::default()
+        };
+
+        if let Ok(response) = self.api.list_tasks(workspace.id, Some(&params)).await {
+            self.calendar_tasks.clear();
+            for task in response.tasks {
+                if let Some(due_date) = task.due_date {
+                    *self.calendar_tasks.entry(due_date).or_insert(0) += 1;
+                }
             }
         }
     }

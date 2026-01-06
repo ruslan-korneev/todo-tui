@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 
 mod api;
 mod app;
+mod calendar;
 mod editor;
 mod figlet;
 mod markdown;
